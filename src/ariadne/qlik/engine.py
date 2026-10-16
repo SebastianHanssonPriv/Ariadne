@@ -235,6 +235,107 @@ class EngineSession:
     def lineage(self):
         return self.call(self.open(), "GetLineage", []).get("qLineage", []) or []
 
+    def sheet_list(self):
+        """Sheets with id, title, description, rank and object count."""
+        out = []
+        for s in self.sheets():
+            qd = s.get("qData", {}) or {}
+            meta = s.get("qMeta", {}) or {}
+            out.append({"id": s["qInfo"]["qId"], "title": qd.get("title") or meta.get("title") or "",
+                        "description": (meta.get("description") or "")[:500],
+                        "published": meta.get("published"), "approved": meta.get("approved"),
+                        "rank": qd.get("rank"), "objects": len(qd.get("cells") or [])})
+        return out
+
+    def sheet_objects(self, sheet_id: str):
+        """Every object on one sheet: type, title, dimensions and measures as
+        expressions or master item ids, and every other expression it holds.
+        Definitions only; GetLayout is never called on a chart."""
+        oh = self.call(self.open(), "GetObject", [sheet_id])["qReturn"]["qHandle"]
+        tree = self.call(oh, "GetFullPropertyTree", [])["qPropEntry"]
+        sheet_prop = tree.get("qProperty", {}) or {}
+        title = (sheet_prop.get("qMetaDef") or {}).get("title", "")
+        rows = []
+        for child in tree.get("qChildren", []) or []:
+            stack = [child]
+            while stack:
+                entry = stack.pop()
+                prop = entry.get("qProperty", {}) or {}
+                info = prop.get("qInfo", {}) or {}
+                hc = prop.get("qHyperCubeDef") or {}
+                dims = [{"library_id": d.get("qLibraryId", ""), "fields": (d.get("qDef") or {}).get("qFieldDefs") or [],
+                         "label": (d.get("qDef") or {}).get("qFieldLabels") or []} for d in hc.get("qDimensions", []) or []]
+                meas = [{"library_id": m.get("qLibraryId", ""), "expression": (m.get("qDef") or {}).get("qDef", ""),
+                         "label": (m.get("qDef") or {}).get("qLabel", "")} for m in hc.get("qMeasures", []) or []]
+                lo = prop.get("qListObjectDef") or {}
+                if lo:
+                    dims.append({"library_id": lo.get("qLibraryId", ""), "fields": (lo.get("qDef") or {}).get("qFieldDefs") or [],
+                                 "label": []})
+                t = prop.get("title", "")
+                if isinstance(t, dict):
+                    t = (t.get("qStringExpression") or {}).get("qExpr", "")
+                exprs, libs = [], set()
+                harvest_expressions(prop, exprs, libs)
+                rows.append({"id": info.get("qId", ""), "type": prop.get("visualization") or info.get("qType", ""),
+                             "title": t if isinstance(t, str) else "", "subtitle": prop.get("subtitle", "") if isinstance(prop.get("subtitle"), str) else "",
+                             "dimensions": dims, "measures": meas,
+                             "other_expressions": sorted({e for e in exprs if e})[:50],
+                             "children": len(entry.get("qChildren", []) or [])})
+                stack.extend(entry.get("qChildren", []) or [])
+        return {"sheet_id": sheet_id, "title": title, "objects": rows}
+
+    def data_model(self):
+        """Tables with their fields and keys (GetTablesAndKeys): structure only."""
+        res = self.call(self.open(), "GetTablesAndKeys",
+                        [{"qcx": 0, "qcy": 0}, {"qcx": 0, "qcy": 0}, 0, True, False])
+        tables = []
+        for t in res.get("qtr", []) or []:
+            tables.append({"name": t.get("qName", ""), "rows": t.get("qNoOfRows"), "is_synthetic": bool(t.get("qIsSynthetic", False)),
+                           "fields": [{"name": f.get("qName", ""), "is_key": bool(f.get("qKeyType") and f.get("qKeyType") != "NOT_KEY"),
+                                       "key_type": f.get("qKeyType") or "", "tags": list(f.get("qTags") or []),
+                                       "distinct_values": f.get("qnTotalDistinctValues")}
+                                      for f in t.get("qFields", []) or []]})
+        keys = [{"fields": list(k.get("qKeyFields") or []), "tables": list(k.get("qTables") or [])}
+                for k in res.get("qk", []) or []]
+        return {"tables": tables, "keys": keys}
+
+    # ---------------------------------------------------------------- writes
+    def create_sheet(self, title: str, description: str = "") -> str:
+        props = {"qInfo": {"qType": "sheet"}, "qMetaDef": {"title": title, "description": description},
+                 "rank": -1, "thumbnail": {"qStaticContentUrlDef": {}}, "columns": 24, "rows": 12, "cells": []}
+        h = self.call(self.open(), "CreateObject", [props])
+        return (h.get("qInfo") or {}).get("qId") or ""
+
+    def add_chart(self, sheet_id: str, viz_type: str, title: str, dimensions: list, measures: list,
+                  col: int = 0, row: int = 0, colspan: int = 12, rowspan: int = 6) -> str:
+        """Create a chart as a child of the sheet and place it in the grid.
+        dimensions: [{"field": ...} or {"library_id": ...}]; measures:
+        [{"expression": ..., "label": ...} or {"library_id": ...}]."""
+        qdims, qmeas = [], []
+        for d in dimensions or []:
+            if d.get("library_id"):
+                qdims.append({"qLibraryId": d["library_id"]})
+            elif d.get("field"):
+                qdims.append({"qDef": {"qFieldDefs": [d["field"]], "qFieldLabels": [d.get("label", "")]}})
+        for m in measures or []:
+            if m.get("library_id"):
+                qmeas.append({"qLibraryId": m["library_id"]})
+            elif m.get("expression"):
+                qmeas.append({"qDef": {"qDef": m["expression"], "qLabel": m.get("label", "")}})
+        props = {"qInfo": {"qType": viz_type}, "visualization": viz_type, "title": title, "showTitles": True,
+                 "qHyperCubeDef": {"qDimensions": qdims, "qMeasures": qmeas, "qInitialDataFetch": [],
+                                   "qSuppressZero": False, "qSuppressMissing": True}}
+        sh = self.call(self.open(), "GetObject", [sheet_id])["qReturn"]["qHandle"]
+        child = self.call(sh, "CreateChild", [props])
+        child_id = (child.get("qInfo") or {}).get("qId") or ""
+        sheet_prop = self.call(sh, "GetProperties", [])["qProp"]
+        cells = list(sheet_prop.get("cells") or [])
+        cells.append({"name": child_id, "type": viz_type, "col": col, "row": row, "colspan": colspan, "rowspan": rowspan,
+                      "bounds": {"y": row / 12 * 100, "x": col / 24 * 100, "width": colspan / 24 * 100, "height": rowspan / 12 * 100}})
+        sheet_prop["cells"] = cells
+        self.call(sh, "SetProperties", [sheet_prop])
+        return child_id
+
     def do_save(self):
         self.call(self.open(), "DoSave", [])
 

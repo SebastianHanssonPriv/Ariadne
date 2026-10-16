@@ -63,10 +63,26 @@ check("a metadata list that smuggles a list object is refused",
 check("CreateSessionObject without a definition is refused", refused(P.check_engine, "CreateSessionObject", False, []))
 check("an allowed REST path passes", not refused(P.check_path, "/api/v1/apps/x/scripts"))
 check("an absolute temp-contents URL passes", not refused(P.check_path, "https://t.eu.qlikcloud.com/api/v1/temp-contents/abc?inline=1"))
-for path in ("/api/v1/data-files/x", "/api/v1/datasets/x/data", "/api/v1/qix-datafiles/x", "/api/v1/apps-data", "/api/v1/reloads"):
+for path in ("/api/v1/data-files/x", "/api/v1/datasets/x/data", "/api/v1/qix-datafiles/x", "/api/v1/apps-data", "/api/v1/collections"):
     check(f"{path} is refused", refused(P.check_path, path))
 check("Rest.get refuses a path outside the allowlist before any network call",
       refused(r0.get, "/api/v1/data-files/abc"))
+print("gateway paths:")
+for path in ("/api/v1/data-sets/abc", "/api/v1/glossaries/g/terms", "/api/v1/reloads/r1", "/api/v1/automations/a/runs",
+             "/api/v1/apps/x/reloads/logs/r1"):
+    check(f"{path} is allowed (metadata)", not refused(P.check_path, path))
+for path in ("/api/v1/data-sets/abc/profiles", "/api/v1/data-sets/abc/sample", "/api/v1/apps/x/data/metadata",
+             "/api/v1/apps/x/field-values", "/api/v1/data-sets/abc/preview"):
+    check(f"{path} is refused (data)", refused(P.check_path, path))
+check("CreateObject with a typed sheet definition is allowed with the flag",
+      not refused(P.check_engine, "CreateObject", True, [{"qInfo": {"qType": "sheet"}, "cells": []}]))
+check("CreateChild with a hypercube definition (metadata) is allowed",
+      not refused(P.check_engine, "CreateChild", True, [{"qInfo": {"qType": "barchart"}, "qHyperCubeDef": {"qDimensions": [], "qInitialDataFetch": []}}]))
+check("CreateChild with an initial data fetch is refused",
+      refused(P.check_engine, "CreateChild", True, [{"qInfo": {"qType": "barchart"}, "qHyperCubeDef": {"qInitialDataFetch": [{"qTop": 0, "qHeight": 50}]}}]))
+check("SetProperties that smuggles a data fetch is refused",
+      refused(P.check_engine, "SetProperties", True, [{"qInfo": {"qType": "barchart"}, "qHyperCubeDef": {"qInitialDataFetch": [{"qHeight": 1}]}}]))
+check("CreateObject without the flag is refused", refused(P.check_engine, "CreateObject", False, [{"qInfo": {"qType": "sheet"}}]))
 print()
 print(f"{sum(ok)} of {len(ok)} pass")
 sys.exit(0 if all(ok) else 1)

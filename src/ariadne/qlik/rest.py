@@ -198,6 +198,169 @@ class Rest:
         except Exception:
             return {"name": "", "status": "", "found": None}
 
+    # -------------------------------------------------------------- search
+    SEARCH_TYPES = ("app", "dataset", "glossary", "automation", "dataproduct", "note", "collection",
+                    "qvapp", "genericlink", "knowledgebase", "assistant")
+
+    def search_items(self, query: str = "", resource_types=(), space_id: str = "", limit: int = 50):
+        """Items of the given types whose name matches `query` (the Items API's
+        own name filter). Metadata only. Assumption A14."""
+        q = {"limit": str(max(1, min(limit, 100)))}
+        if query:
+            q["name"] = query
+        if resource_types:
+            q["resourceType"] = ",".join(t for t in resource_types if t in self.SEARCH_TYPES)
+        if space_id:
+            q["spaceId"] = space_id
+        out = []
+        for data in self.paged("/api/v1/items?" + urllib.parse.urlencode(q)):
+            for it in data.get("data", []):
+                attrs = it.get("resourceAttributes") or {}
+                out.append({"name": it.get("name", ""), "id": it.get("resourceId") or it.get("id") or "",
+                            "type": it.get("resourceType") or "", "space_id": it.get("spaceId") or "",
+                            "owner_id": it.get("ownerId") or "", "updated": it.get("updatedAt") or "",
+                            "description": (it.get("description") or attrs.get("description") or "")[:300]})
+                if len(out) >= limit:
+                    return out
+        return out
+
+    # ------------------------------------------------------------ datasets
+    def dataset(self, dataset_id: str) -> dict:
+        """Metadata and schema of a dataset: never its profile or sample
+        (those paths are refused by policy). Assumption A15."""
+        d = self.get(f"/api/v1/data-sets/{dataset_id}")
+        schema = ((d.get("schema") or {}).get("dataFields")) or (d.get("schema") or {}).get("fields") or []
+        fields = []
+        for f in schema:
+            if isinstance(f, dict):
+                fields.append({"name": f.get("name", ""), "type": f.get("dataType") or f.get("type") or "",
+                               "primary_key": bool(f.get("primaryKey", False)), "nullable": f.get("nullable")})
+        return {"id": d.get("id") or dataset_id, "name": d.get("name") or "", "space_id": d.get("spaceId") or "",
+                "owner_id": d.get("ownerId") or "", "technical_name": d.get("technicalName") or "",
+                "qri": d.get("qri") or "", "description": (d.get("description") or "")[:1000],
+                "last_updated": d.get("lastUpdateTime") or d.get("modifiedTime") or "",
+                "created": d.get("createdTime") or "", "operational": d.get("operational") or {},
+                "fields": fields, "field_count": len(fields),
+                "unknowns": [] if fields else ["the tenant returned no schema fields for this dataset"]}
+
+    # ------------------------------------------------------------ glossary
+    def glossaries(self):
+        out = []
+        for data in self.paged("/api/v1/glossaries?limit=100"):
+            for g in data.get("data", []):
+                out.append({"id": g.get("id", ""), "name": g.get("name", ""), "description": (g.get("description") or "")[:500],
+                            "space_id": g.get("spaceId") or "", "owner_id": g.get("ownerId") or "",
+                            "status": g.get("status") or ""})
+        return out
+
+    def glossary_terms(self, glossary_id: str, query: str = "", limit: int = 100):
+        q = {"limit": str(max(1, min(limit, 100)))}
+        if query:
+            q["query"] = query
+        out = []
+        for data in self.paged(f"/api/v1/glossaries/{glossary_id}/terms?" + urllib.parse.urlencode(q)):
+            for t in data.get("data", []):
+                out.append(self._term(t))
+                if len(out) >= limit:
+                    return out
+        return out
+
+    @staticmethod
+    def _term(t: dict) -> dict:
+        return {"id": t.get("id", ""), "name": t.get("name", ""), "description": (t.get("description") or "")[:2000],
+                "abbreviation": t.get("abbreviation") or "", "status": t.get("status") or "",
+                "categories": list(t.get("categories") or []), "tags": list(t.get("tags") or []),
+                "steward_id": t.get("stewardId") or "", "modified": t.get("updatedAt") or t.get("modifiedAt") or ""}
+
+    def glossary_term(self, glossary_id: str, term_id: str) -> dict:
+        return self._term(self.get(f"/api/v1/glossaries/{glossary_id}/terms/{term_id}"))
+
+    def create_glossary_term(self, glossary_id: str, body: dict) -> dict:
+        return self._term(self._send("POST", f"/api/v1/glossaries/{glossary_id}/terms", body))
+
+    def update_glossary_term(self, glossary_id: str, term_id: str, body: dict) -> dict:
+        """Read, merge, PUT. Assumption A16: the terms endpoint accepts a full
+        PUT; if it only accepts PATCH, this raises and the write is reported."""
+        current = self.get(f"/api/v1/glossaries/{glossary_id}/terms/{term_id}")
+        merged = dict(current)
+        merged.update(body)
+        return self._term(self._send("PUT", f"/api/v1/glossaries/{glossary_id}/terms/{term_id}", merged))
+
+    # ------------------------------------------------------------- reloads
+    @staticmethod
+    def _reload(r: dict) -> dict:
+        return {"id": r.get("id", ""), "app_id": r.get("appId") or "", "status": r.get("status") or "",
+                "type": r.get("type") or "", "partial": r.get("partial"), "user_id": r.get("userId") or "",
+                "created": r.get("creationTime") or "", "started": r.get("startTime") or "",
+                "ended": r.get("endTime") or "", "engine_time": r.get("engineTime") or "",
+                "log_excerpt": (r.get("log") or "")[:2000]}
+
+    def reloads(self, app_id: str, limit: int = 20):
+        q = {"appId": app_id, "limit": str(max(1, min(limit, 100)))}
+        out = []
+        for data in self.paged("/api/v1/reloads?" + urllib.parse.urlencode(q)):
+            for r in data.get("data", []):
+                out.append(self._reload(r))
+                if len(out) >= limit:
+                    return out
+        return out
+
+    def reload(self, reload_id: str) -> dict:
+        return self._reload(self.get(f"/api/v1/reloads/{reload_id}"))
+
+    def start_reload(self, app_id: str, partial: bool = False) -> dict:
+        return self._reload(self._send("POST", "/api/v1/reloads", {"appId": app_id, "partial": bool(partial)}))
+
+    def cancel_reload(self, reload_id: str) -> dict:
+        return self._send("POST", f"/api/v1/reloads/{reload_id}/actions/cancel", {}) or {"cancelled": True}
+
+    def reload_log(self, app_id: str, reload_id: str) -> str:
+        """The reload log text. Assumption A17: served by the Apps API at
+        /apps/{id}/reloads/logs/{reloadId}. A TRACE in a script can echo a
+        value into the log; the caller masks what it can."""
+        _, _, raw = self._raw("GET", f"/api/v1/apps/{app_id}/reloads/logs/{reload_id}", timeout=120)
+        return raw.decode("utf-8", "replace")
+
+    # --------------------------------------------------------- automations
+    @staticmethod
+    def _automation(a: dict) -> dict:
+        return {"id": a.get("id", ""), "name": a.get("name", ""), "description": (a.get("description") or "")[:500],
+                "state": a.get("state") or "", "run_mode": a.get("runMode") or "", "owner_id": a.get("ownerId") or "",
+                "space_id": a.get("spaceId") or "", "schedules": a.get("schedules") or [],
+                "last_run_status": a.get("lastRunStatus") or "", "last_run_at": a.get("lastRunAt") or "",
+                "updated": a.get("updatedAt") or ""}
+
+    def automations(self, limit: int = 100):
+        out = []
+        for data in self.paged(f"/api/v1/automations?limit={max(1, min(limit, 100))}"):
+            for a in data.get("data", []):
+                out.append(self._automation(a))
+                if len(out) >= limit:
+                    return out
+        return out
+
+    def automation(self, automation_id: str) -> dict:
+        return self._automation(self.get(f"/api/v1/automations/{automation_id}"))
+
+    def automation_runs(self, automation_id: str, limit: int = 20):
+        out = []
+        for data in self.paged(f"/api/v1/automations/{automation_id}/runs?limit={max(1, min(limit, 100))}"):
+            for r in data.get("data", []):
+                out.append({"id": r.get("id", ""), "status": r.get("status") or "", "context": r.get("context") or "",
+                            "started": r.get("startTime") or "", "stopped": r.get("stopTime") or "",
+                            "error": (r.get("error") or "")[:500]})
+                if len(out) >= limit:
+                    return out
+        return out
+
+    def start_automation(self, automation_id: str, inputs: dict | None = None) -> dict:
+        """Assumption A18: POST /automations/{id}/runs with context 'api'."""
+        body = {"context": "api"}
+        if inputs:
+            body["inputs"] = inputs
+        r = self._send("POST", f"/api/v1/automations/{automation_id}/runs", body)
+        return {"id": r.get("id", ""), "status": r.get("status") or "", "started": r.get("startTime") or ""}
+
     # ------------------------------------------------------------- lineage
     def lineage_graph(self, app_guid: str, level: str = "all", up: int = -1,
                       collapse: bool = False) -> dict:

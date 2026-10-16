@@ -41,6 +41,17 @@ Claude Desktop / Claude Code / any MCP client
 | | `archive_app` | Move an app into an archive space. Never a copy, never a delete. Dry run by default. |
 | | `apply_master_items` | Create or update master measures and dimensions from definitions. Exact title, duplicates in full, near misses refused, snapshot first, approved developer note after. Dry run by default. |
 | | `add_developer_note` | Insert an approved note under the script's developer-notes heading. Insert-only, verified. Dry run by default. |
+| Gateway, read | `search` | Apps, datasets, glossaries, automations, data products and more by name, with space and owner. |
+| | `list_sheets`, `get_sheet_details` | Sheets, and every object on a sheet by its definition: type, title, dimensions, measures, expressions. Never evaluated. |
+| | `get_data_model` | Tables, fields, key types, distinct-value counts and keys. Structure only. |
+| | `get_dataset` | A dataset's metadata and schema. Profile and sample rows are refused by policy. |
+| | `list_glossaries`, `search_glossary_terms`, `get_glossary_term` | The business glossary. |
+| | `list_reloads`, `get_reload`, `get_reload_log` | Reload history, status and the masked log. |
+| | `list_automations`, `get_automation` | Automations and their runs. |
+| Gateway, write | `start_reload`, `cancel_reload` | Reloads, logged. |
+| | `create_glossary_term`, `update_glossary_term` | Terms created as draft, retired by deprecating. Near-duplicate names refused. Never deleted. |
+| | `start_automation` | Run an automation, logged. |
+| | `create_sheet`, `add_chart` | A sheet, and a chart defined from fields, expressions or master items, placed on the grid. Snapshot first, approved note, logged. Never evaluated. |
 | Audit | `list_developer_notes` | The register: every app's developer-notes section across readable scripts, plus the snapshots in the archive spaces. |
 | | `read_audit_log` | The last entries of Ariadne's own append-only log of writes. |
 
@@ -230,10 +241,13 @@ markers, so there is no central document to keep in sync.
 
 ## Beside the official Qlik MCP server
 
-Qlik's server (help pages dated 2026-10-15) is the right tool for analysis,
-selections, chart building, automations, glossary and data products. Ariadne
-does none of that. It exists for the tenant-wide, evidence-weighted questions
-the official catalogue answers one object at a time or not at all.
+Qlik's server (help pages dated 2026-10-15) covers analysis, selections,
+chart building, automations, glossary and data products, and returns data.
+Where that server cannot be used, Ariadne is the single gateway: it covers the
+structural half of that catalogue (sheets, data model, datasets, glossary,
+reloads, automations, sheet and chart creation) plus the tenant-wide
+governance questions, and leaves out everything that returns data rows or
+sets selections.
 
 | | Official Qlik MCP server | Ariadne |
 |---|---|---|
@@ -270,8 +284,11 @@ these parsers were ported from, and prints what the defect was.
 
 ## Status
 
-Version 0.3.0: metadata-only access by construction, read tools, a guarded
-write path, and the developer note and audit log behind every change. `docs/DESIGN.md` holds
+Version 0.4.0: the single Qlik gateway, metadata only by construction. Forty
+tools: reach, lineage, governance, the gateway reads and writes (sheets, data
+model, datasets, glossary, reloads, automations), a guarded write path, and
+the developer note and audit log behind every change. There is no data mode;
+`docs/DESIGN.md` records why and what it would take. `docs/DESIGN.md` holds
 the gap analysis against the official server, the write policy, the decisions
 taken, the ones still open, and the roadmap. `docs/ASSUMPTIONS.md` lists every
 platform behaviour Ariadne depends on and how to verify it on your tenant;

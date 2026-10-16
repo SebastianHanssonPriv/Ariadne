@@ -154,8 +154,11 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
             "finding about permissions, not evidence about the object. Results are prioritised "
             "worklists to verify. Tenant-wide tools (trace_qvd, list_extractors, "
             "check_ownership, compare_master_items) take minutes on large tenants; narrow with "
-            "space_id or max_apps when you can. Use the official Qlik MCP server for data "
-            "questions, selections, chart building and writes; Ariadne is read-only."),
+            "space_id or max_apps when you can. Ariadne is the single Qlik gateway here and it "
+            "reads metadata only: structure, definitions, names, counts, logs. It never returns "
+            "data rows or field values, never sets selections, and never deletes. Write tools are "
+            "off unless enabled, dry-run by default, snapshot a published app first, need an "
+            "approved developer note for app changes, and are audit-logged."),
     )
 
     # ------------------------------------------------------------ helpers
@@ -1076,6 +1079,360 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
                         coverage=coverage(1, 1, scope="local audit log", returned=len(rows)),
                         limitations=["Only changes made through this Ariadne configuration are here; "
                                      "changes made in the Qlik UI or by other tools are not."])
+
+    # =============================================================== GATEWAY
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("search")
+    def search(query: str = "", resource_types: list[str] | None = None, space_id: str = "",
+               limit: int = 50) -> dict:
+        """Find Qlik resources by name: apps, datasets, glossaries, automations, data products,
+        notes, collections. Metadata only: name, id, type, space, owner, description. Narrow
+        with resource_types (for example ["app", "dataset"]) and space_id."""
+        b = be()
+        rows = b.rest.search_items(query, tuple(resource_types or ()), space_id, limit)
+        spaces = b.spaces()
+        for r in rows:
+            r["space"] = _space_label(spaces, r.get("space_id"))[0]
+        return envelope({"results": rows, "count": len(rows)},
+                        coverage=coverage(1, 1, scope=f"items matching {query!r}" if query else "items", returned=len(rows)),
+                        limitations=[PERSONAL_BLIND_SPOT, "The Items API matches on name; content is not searched."])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("list sheets")
+    def list_sheets(app_id: str) -> dict:
+        """The sheets of an app: id, title, description, rank, published and approved state
+        where the tenant reports them, and how many objects each holds."""
+        b = be()
+        with b.engine(app_id) as eng:
+            rows = eng.sheet_list()
+        unknown = sum(1 for r in rows if r.get("published") is None)
+        return envelope({"sheets": rows, "count": len(rows)},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        unknowns=([f"published state not reported for {unknown} sheet(s)"] if unknown else []))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get sheet details")
+    def get_sheet_details(app_id: str, sheet_id: str) -> dict:
+        """Every object on one sheet: type, title, dimensions and measures (as field names,
+        expressions or master item ids) and the other expressions it holds. Definitions
+        only; no chart is ever evaluated, so no values are returned."""
+        b = be()
+        with b.engine(app_id) as eng:
+            res = eng.sheet_objects(sheet_id)
+        return envelope(res, coverage=coverage(1, 1, scope=f"sheet {sheet_id} of app {app_id}",
+                                               objects=len(res["objects"])),
+                        limitations=["Objects are described by their definitions; layout and styling are not read.",
+                                     "A chart's data is never fetched."])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get data model")
+    def get_data_model(app_id: str) -> dict:
+        """The app's data model as structure: tables with row counts, their fields with key
+        type, tags and distinct-value counts, and the keys between tables. No values."""
+        b = be()
+        with b.engine(app_id) as eng:
+            dm = eng.data_model()
+        return envelope({**dm, "table_count": len(dm["tables"]),
+                         "field_count": sum(len(t["fields"]) for t in dm["tables"]),
+                         "synthetic_tables": [t["name"] for t in dm["tables"] if t["is_synthetic"]]},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        evidence=["Engine GetTablesAndKeys"])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get dataset")
+    def get_dataset(dataset_id: str) -> dict:
+        """A dataset's metadata and schema: name, space, owner, technical name, last update,
+        and the fields with their types. Never its profile or sample rows; those paths are
+        refused by policy."""
+        b = be()
+        d = b.rest.dataset(dataset_id)
+        unknowns = d.pop("unknowns", [])
+        d["space"] = _space_label(b.spaces(), d.get("space_id"))[0]
+        return envelope(d, coverage=coverage(1, 1, scope=f"dataset {dataset_id}"), unknowns=unknowns,
+                        limitations=["Profile statistics and sample rows are data and are not read."])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("list glossaries")
+    def list_glossaries() -> dict:
+        """Business glossaries on the tenant with their space, owner and status."""
+        b = be()
+        rows = b.rest.glossaries()
+        spaces = b.spaces()
+        for r in rows:
+            r["space"] = _space_label(spaces, r.get("space_id"))[0]
+        return envelope({"glossaries": rows, "count": len(rows)}, coverage=coverage(1, 1, scope="glossaries"))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("search glossary terms")
+    def search_glossary_terms(glossary_id: str, query: str = "", limit: int = 100) -> dict:
+        """Terms of a glossary, optionally matching a query: name, definition, abbreviation,
+        status (draft, verified, deprecated), categories and tags."""
+        b = be()
+        rows = b.rest.glossary_terms(glossary_id, query, limit)
+        return envelope({"terms": rows, "count": len(rows)},
+                        coverage=coverage(1, 1, scope=f"glossary {glossary_id}", returned=len(rows)))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get glossary term")
+    def get_glossary_term(glossary_id: str, term_id: str) -> dict:
+        """One glossary term in full."""
+        b = be()
+        return envelope(b.rest.glossary_term(glossary_id, term_id),
+                        coverage=coverage(1, 1, scope=f"term {term_id}"))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("list reloads")
+    def list_reloads(app_id: str, limit: int = 20) -> dict:
+        """Recent reloads of an app: status, type, who started it, start and end times."""
+        b = be()
+        rows = b.rest.reloads(app_id, limit)
+        return envelope({"reloads": rows, "count": len(rows)},
+                        coverage=coverage(1, 1, scope=f"reloads of app {app_id}", returned=len(rows)))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get reload")
+    def get_reload(reload_id: str) -> dict:
+        """The status of one reload, with the log excerpt the tenant attaches to it."""
+        b = be()
+        r = b.rest.reload(reload_id)
+        r["log_excerpt"] = S.redact_secrets(r.get("log_excerpt") or "")
+        return envelope(r, coverage=coverage(1, 1, scope=f"reload {reload_id}"))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get reload log")
+    def get_reload_log(app_id: str, reload_id: str, offset: int = 0, max_chars: int = 0) -> dict:
+        """The full reload log, paged by character offset. Credential-looking values are
+        masked. A TRACE statement in a script can echo a value into the log; that is the
+        script author's choice and a limitation stated here."""
+        b = be()
+        limit = max_chars if max_chars and max_chars > 0 else b.settings.script_max_chars
+        text = S.redact_secrets(b.rest.reload_log(app_id, reload_id))
+        chunk = text[offset:offset + limit]
+        nxt = offset + len(chunk) if offset + len(chunk) < len(text) else None
+        return envelope({"log": chunk, "offset": offset, "next_offset": nxt, "total_chars": len(text),
+                         "truncated": nxt is not None},
+                        coverage=coverage(1, 1, scope=f"reload {reload_id}", chars_total=len(text)),
+                        limitations=["Credential-looking values are masked.",
+                                     "A TRACE in the script can write a value into this log."])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("list automations")
+    def list_automations(limit: int = 100) -> dict:
+        """Automations on the tenant: name, state, run mode, schedules, owner, last run."""
+        b = be()
+        rows = b.rest.automations(limit)
+        return envelope({"automations": rows, "count": len(rows)},
+                        coverage=coverage(1, 1, scope="automations", returned=len(rows)))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("get automation")
+    def get_automation(automation_id: str, runs: int = 10) -> dict:
+        """One automation with its recent runs."""
+        b = be()
+        a = b.rest.automation(automation_id)
+        a["runs"] = b.rest.automation_runs(automation_id, runs)
+        return envelope(a, coverage=coverage(1, 1, scope=f"automation {automation_id}"))
+
+    # ------------------------------------------------------- gateway writes
+    @srv.tool(annotations=WRITE)
+    @guarded("start reload")
+    def start_reload(app_id: str, partial: bool = False, dry_run: bool = True) -> dict:
+        """Start a reload of an app (full, or partial). Recorded in the audit log. Data is
+        loaded by Qlik from its sources; nothing is read back here. dry_run=True shows what
+        would be started."""
+        gate = _write_gate("start reload") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        b = be()
+        app = _app_by_id(b, app_id)
+        res = None
+        if not dry_run:
+            res = b.rest.start_reload(app_id, partial)
+        b.audit.record(tool="start_reload", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"partial": partial, "reload_id": (res or {}).get("id", "")})
+        return envelope({"dry_run": dry_run, "app": app["name"], "partial": partial, "reload": res},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        limitations=["Use get_reload to follow the status; the log is available when it ends."])
+
+    @srv.tool(annotations=WRITE)
+    @guarded("cancel reload")
+    def cancel_reload(reload_id: str, dry_run: bool = True) -> dict:
+        """Cancel a running reload. Recorded in the audit log."""
+        gate = _write_gate("cancel reload") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        b = be()
+        r = b.rest.reload(reload_id)
+        res = None
+        if not dry_run:
+            res = b.rest.cancel_reload(reload_id)
+        b.audit.record(tool="cancel_reload", user=b.me(), app_id=r.get("app_id", ""), dry_run=dry_run,
+                       summary={"reload_id": reload_id, "status_before": r.get("status", "")})
+        return envelope({"dry_run": dry_run, "reload": r, "result": res}, coverage=coverage(1, 1, scope=f"reload {reload_id}"))
+
+    @srv.tool(annotations=WRITE)
+    @guarded("create glossary term")
+    def create_glossary_term(glossary_id: str, name: str, description: str, abbreviation: str = "",
+                             categories: list[str] | None = None, tags: list[str] | None = None,
+                             status: str = "draft", dry_run: bool = True) -> dict:
+        """Create a glossary term (draft by default). Recorded in the audit log. Nothing is
+        ever deleted; a wrong term is deprecated by update_glossary_term."""
+        gate = _write_gate("create glossary term") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        if status not in ("draft", "verified", "deprecated"):
+            return refused("create glossary term", "status must be draft, verified or deprecated (case-sensitive).", "")
+        b = be()
+        existing = [t for t in b.rest.glossary_terms(glossary_id, name, 100) if (t["name"] or "").strip().lower() == name.strip().lower()]
+        if existing:
+            return refused("create glossary term", "A term with this name already exists in the glossary; a write never "
+                           "creates a near duplicate.", "Use update_glossary_term on the existing term.",
+                           ", ".join(t["id"] for t in existing))
+        body = {"name": name.strip(), "description": description, "status": status}
+        if abbreviation:
+            body["abbreviation"] = abbreviation
+        if categories:
+            body["categories"] = list(categories)
+        if tags:
+            body["tags"] = list(tags)
+        res = None if dry_run else b.rest.create_glossary_term(glossary_id, body)
+        b.audit.record(tool="create_glossary_term", user=b.me(), app_id=glossary_id, dry_run=dry_run,
+                       summary={"name": name, "status": status, "term_id": (res or {}).get("id", "")})
+        return envelope({"dry_run": dry_run, "term": res or body}, coverage=coverage(1, 1, scope=f"glossary {glossary_id}"))
+
+    @srv.tool(annotations=WRITE_OVERWRITES)
+    @guarded("update glossary term")
+    def update_glossary_term(glossary_id: str, term_id: str, description: str = "", abbreviation: str = "",
+                             status: str = "", tags: list[str] | None = None, dry_run: bool = True) -> dict:
+        """Update a glossary term's description, abbreviation, status or tags. Only the fields
+        given change. Deprecating is the way to retire a term; nothing is deleted."""
+        gate = _write_gate("update glossary term") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        if status and status not in ("draft", "verified", "deprecated"):
+            return refused("update glossary term", "status must be draft, verified or deprecated (case-sensitive).", "")
+        b = be()
+        before = b.rest.glossary_term(glossary_id, term_id)
+        body = {k: v for k, v in (("description", description), ("abbreviation", abbreviation),
+                                  ("status", status), ("tags", list(tags) if tags else None)) if v}
+        if not body:
+            return failed("update glossary term", "nothing to change")
+        res = None if dry_run else b.rest.update_glossary_term(glossary_id, term_id, body)
+        b.audit.record(tool="update_glossary_term", user=b.me(), app_id=glossary_id, dry_run=dry_run,
+                       summary={"term_id": term_id, "changed": sorted(body), "status_before": before.get("status", "")})
+        return envelope({"dry_run": dry_run, "before": before, "changes": body, "after": res},
+                        coverage=coverage(1, 1, scope=f"term {term_id}"))
+
+    @srv.tool(annotations=WRITE)
+    @guarded("start automation")
+    def start_automation(automation_id: str, inputs: dict | None = None, dry_run: bool = True) -> dict:
+        """Start an automation run, with inputs if it takes them. Recorded in the audit log."""
+        gate = _write_gate("start automation") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        b = be()
+        a = b.rest.automation(automation_id)
+        res = None if dry_run else b.rest.start_automation(automation_id, inputs)
+        b.audit.record(tool="start_automation", user=b.me(), app_id=automation_id, dry_run=dry_run,
+                       summary={"name": a.get("name", ""), "inputs": sorted((inputs or {}).keys()), "run_id": (res or {}).get("id", "")})
+        return envelope({"dry_run": dry_run, "automation": a, "run": res}, coverage=coverage(1, 1, scope=f"automation {automation_id}"))
+
+    @srv.tool(annotations=WRITE)
+    @guarded("create sheet")
+    def create_sheet(app_id: str, title: str, description: str = "", developer_note: str = "",
+                     dry_run: bool = True) -> dict:
+        """Create an empty sheet in an app. Snapshot first when the app has a published copy;
+        a real run needs an approved developer_note (the dry run proposes one) and is logged."""
+        gate = _write_gate("create sheet") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        b = be()
+        app = _app_by_id(b, app_id)
+        pl, taken, refusal = _snapshot(b, app, "", dry_run)
+        if refusal:
+            return refusal
+        proposed = f"created sheet '{title}'" + (f"; snapshot taken before the change: {taken[0]['name']}" if taken else "")
+        if not dry_run and not (developer_note or "").strip():
+            return refused("create sheet", "A real write requires an approved developer note.",
+                           "Run with dry_run=true, show the proposed note, and pass the approved text as developer_note.", proposed)
+        sheet_id, note_rec, note_problem = "", None, ""
+        if not dry_run:
+            with b.engine(app_id) as eng:
+                sheet_id = eng.create_sheet(title, description)
+                eng.do_save()
+            try:
+                note_rec = _write_note(b, app_id, developer_note, "create_sheet", None, False)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        else:
+            try:
+                note_rec = _write_note(b, app_id, developer_note or proposed, "create_sheet", None, True)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        b.audit.record(tool="create_sheet", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"title": title, "sheet_id": sheet_id, "note_written": bool(note_rec and note_rec.get("written")),
+                                "note_problem": note_problem},
+                       note=developer_note or proposed, snapshot_ids=[t["snapshot_id"] for t in taken])
+        return envelope({"dry_run": dry_run, "sheet_id": sheet_id, "title": title,
+                         "snapshot": {"plan": pl, "taken": taken},
+                         "developer_note": {"proposed": proposed, "approved": developer_note or "", "record": note_rec, "problem": note_problem}},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        limitations=(["The developer note could not be written: " + note_problem] if note_problem else []))
+
+    @srv.tool(annotations=WRITE)
+    @guarded("add chart")
+    def add_chart(app_id: str, sheet_id: str, viz_type: str, title: str,
+                  dimensions: list[dict] | None = None, measures: list[dict] | None = None,
+                  col: int = 0, row: int = 0, colspan: int = 12, rowspan: int = 6,
+                  developer_note: str = "", dry_run: bool = True) -> dict:
+        """Add a chart to a sheet: viz_type (barchart, linechart, piechart, table, kpi,
+        combochart, scatterplot, filterpane), a title, dimensions as [{"field": "Region"}]
+        or [{"library_id": ...}], measures as [{"expression": "Sum(Sales)", "label": ...}] or
+        [{"library_id": ...}], and a grid position (24 columns by 12 rows). The chart is
+        defined, never evaluated. Snapshot first, approved developer_note on a real run,
+        logged."""
+        gate = _write_gate("add chart") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        if viz_type not in ("barchart", "linechart", "piechart", "table", "kpi", "combochart", "scatterplot",
+                            "filterpane", "pivot-table", "treemap", "gauge", "text-image"):
+            return refused("add chart", "viz_type is not one Ariadne creates.", "Use one of the listed types.", viz_type)
+        b = be()
+        app = _app_by_id(b, app_id)
+        pl, taken, refusal = _snapshot(b, app, "", dry_run)
+        if refusal:
+            return refusal
+        proposed = (f"added {viz_type} '{title}' to sheet {sheet_id}"
+                    + (f"; snapshot taken before the change: {taken[0]['name']}" if taken else ""))
+        if not dry_run and not (developer_note or "").strip():
+            return refused("add chart", "A real write requires an approved developer note.",
+                           "Run with dry_run=true, show the proposed note, and pass the approved text as developer_note.", proposed)
+        chart_id, note_rec, note_problem = "", None, ""
+        if not dry_run:
+            with b.engine(app_id) as eng:
+                chart_id = eng.add_chart(sheet_id, viz_type, title, dimensions or [], measures or [], col, row, colspan, rowspan)
+                eng.do_save()
+            try:
+                note_rec = _write_note(b, app_id, developer_note, "add_chart", None, False)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        else:
+            try:
+                note_rec = _write_note(b, app_id, developer_note or proposed, "add_chart", None, True)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        b.audit.record(tool="add_chart", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"sheet_id": sheet_id, "viz_type": viz_type, "title": title, "chart_id": chart_id,
+                                "note_written": bool(note_rec and note_rec.get("written")), "note_problem": note_problem},
+                       note=developer_note or proposed, snapshot_ids=[t["snapshot_id"] for t in taken])
+        return envelope({"dry_run": dry_run, "chart_id": chart_id, "sheet_id": sheet_id, "viz_type": viz_type,
+                         "definition": {"title": title, "dimensions": dimensions or [], "measures": measures or [],
+                                        "position": {"col": col, "row": row, "colspan": colspan, "rowspan": rowspan}},
+                         "snapshot": {"plan": pl, "taken": taken},
+                         "developer_note": {"proposed": proposed, "approved": developer_note or "", "record": note_rec, "problem": note_problem}},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        limitations=["The chart is created from its definition and never evaluated here."]
+                                    + (["The developer note could not be written: " + note_problem] if note_problem else []))
 
     # ============================================================== PROMPTS
     @srv.prompt()
