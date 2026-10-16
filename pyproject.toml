@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ariadne-qlik-mcp"
+version = "0.1.0"
+description = "Ariadne: a governance-grade MCP server for Qlik Cloud. Lineage, load-script facts, master-item consistency and ownership, with every answer carrying its own coverage and uncertainty."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Sebastian Hansson"}]
+dependencies = [
+    "mcp>=2.0",
+    "websocket-client>=1.6",
+]
+
+[project.scripts]
+ariadne = "ariadne.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
