@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 
 from ..config import normalize_host
+from .policy import check_http
 
 
 class QlikHTTPError(RuntimeError):
@@ -27,10 +28,21 @@ class QlikHTTPError(RuntimeError):
         self.url = url
 
 
-def request_json(url: str, api_key: str, timeout: int = 30, retries: int = 3):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}",
-                                               "Accept-Encoding": "gzip"})
+def request(url: str, api_key: str, method: str = "GET", body=None, content_type: str = "",
+            timeout: int = 30, retries: int = 3):
+    """(status, headers, bytes). Gzip asked for, 429/503 retried on Retry-After,
+    404 never retried. The policy check on the method is the caller's (Rest)."""
+    headers = {"Authorization": f"Bearer {api_key}", "Accept-Encoding": "gzip"}
+    data = None
+    if body is not None:
+        if isinstance(body, (bytes, bytearray)):
+            data = bytes(body)
+            headers["Content-Type"] = content_type or "application/octet-stream"
+        else:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
     for attempt in range(retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
@@ -39,7 +51,7 @@ def request_json(url: str, api_key: str, timeout: int = 30, retries: int = 3):
                         raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
                     except OSError:
                         pass    # a proxy that decompressed but left the header on
-                return json.loads(raw.decode("utf-8")) if raw else {}
+                return resp.status, dict(resp.headers.items()), raw
         except urllib.error.HTTPError as e:
             if e.code in (429, 503) and attempt < retries:
                 ra = e.headers.get("Retry-After") if e.headers else None
@@ -50,10 +62,10 @@ def request_json(url: str, api_key: str, timeout: int = 30, retries: int = 3):
                 time.sleep(min(wait, 10))
                 continue
             try:
-                body = e.read().decode("utf-8", "replace")
+                text = e.read().decode("utf-8", "replace")
             except Exception:
-                body = ""
-            raise QlikHTTPError(e.code, url, body) from None
+                text = ""
+            raise QlikHTTPError(e.code, url, text) from None
         except urllib.error.URLError:
             if attempt < retries:
                 time.sleep(1.5 * (attempt + 1))
@@ -61,16 +73,61 @@ def request_json(url: str, api_key: str, timeout: int = 30, retries: int = 3):
             raise
 
 
+def request_json(url: str, api_key: str, timeout: int = 30, retries: int = 3,
+                 method: str = "GET", body=None):
+    _, _, raw = request(url, api_key, method=method, body=body, timeout=timeout, retries=retries)
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
 class Rest:
     """Bound to one tenant and one key."""
 
-    def __init__(self, tenant: str, api_key: str):
+    def __init__(self, tenant: str, api_key: str, allow_write: bool = False):
         self.host = normalize_host(tenant)
         self.api_key = api_key
+        self.allow_write = allow_write
+
+    def _url(self, path: str) -> str:
+        return path if path.startswith("http") else f"https://{self.host}{path}"
+
+    def _raw(self, method: str, path: str, body=None, content_type: str = "", timeout: int = 30):
+        check_http(method, self.allow_write)
+        return request(self._url(path), self.api_key, method=method, body=body,
+                       content_type=content_type, timeout=timeout)
+
+    def _send(self, method: str, path: str, body=None, timeout: int = 30):
+        _, _, raw = self._raw(method, path, body=body, timeout=timeout)
+        return json.loads(raw.decode("utf-8")) if raw else {}
 
     def get(self, path: str, timeout: int = 30):
-        url = path if path.startswith("http") else f"https://{self.host}{path}"
-        return request_json(url, self.api_key, timeout)
+        return self._send("GET", path, timeout=timeout)
+
+    # -------------------------------------------------------------- writes
+    def export_app(self, app_id: str, no_data: bool = True) -> bytes:
+        """POST /apps/{id}/export?NoData=... then GET the temp-contents URL it
+        points at. Assumption A3 in docs/ASSUMPTIONS.md."""
+        status, headers, _ = self._raw("POST", f"/api/v1/apps/{app_id}/export?NoData={'true' if no_data else 'false'}",
+                                       timeout=300)
+        loc = headers.get("Location") or headers.get("location") or ""
+        if not loc:
+            raise QlikHTTPError(status, self._url(f"/api/v1/apps/{app_id}/export"), "export returned no Location")
+        _, _, body = self._raw("GET", loc, timeout=300)
+        return body
+
+    def import_app(self, qvf: bytes, name: str, space_id: str) -> dict:
+        """POST /apps/import?name=&spaceId=&mode=new with the .qvf body.
+        Returns the new app's attributes. Assumption A4."""
+        q = urllib.parse.urlencode({"name": name, "spaceId": space_id, "mode": "new"})
+        _, _, raw = self._raw("POST", f"/api/v1/apps/import?{q}", body=qvf,
+                              content_type="application/octet-stream", timeout=600)
+        d = json.loads(raw.decode("utf-8")) if raw else {}
+        return d.get("attributes") or d
+
+    def move_app(self, app_id: str, space_id: str) -> dict:
+        return self._send("PUT", f"/api/v1/apps/{app_id}/space", {"spaceId": space_id})
+
+    def set_app_description(self, app_id: str, description: str) -> dict:
+        return self._send("PUT", f"/api/v1/apps/{app_id}", {"attributes": {"description": description}})
 
     def paged(self, path: str, timeout: int = 30):
         url = path
@@ -203,6 +260,8 @@ def app_from_item(it: dict):
         "owner_id": (it.get("ownerId") or attrs.get("ownerId") or ""),
         "reloaded": (attrs.get("lastReloadTime") or it.get("updatedAt") or ""),
         "published": published,
+        "publish_time": attrs.get("publishTime") or "",
+        "origin_app_id": attrs.get("originAppId") or "",
         "description": (it.get("description") or attrs.get("description") or "")[:500],
     }
 

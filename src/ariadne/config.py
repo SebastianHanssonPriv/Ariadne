@@ -9,7 +9,11 @@ settings file on disk would be a second place a key can leak from.
     QLIK_API_KEY_FILE    a file holding one (first line)
     ARIADNE_WORKERS      concurrent engine sessions for bulk reads (default 6)
     ARIADNE_SCRIPT_MAX_CHARS  how much of a load script a tool returns at once
-    ARIADNE_ALLOW_WRITE  "1" to enable the (future) write tools; off by default
+    ARIADNE_ALLOW_WRITE  "1" to enable the write tools; off by default
+    ARIADNE_ARCHIVE_SPACE_ID   default archive space for snapshots
+    ARIADNE_ARCHIVE_MAP        "pattern=space_id;pattern=space_id": a space id or a
+                               glob on the space name routes to that archive space
+    ARIADNE_SNAPSHOT_WITH_DATA "app_id,name glob,...": apps snapshotted WITH data
 
 The key is stripped where it enters, because a key pasted with a trailing
 newline passes a connection test and then fails every request with
@@ -21,7 +25,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class ConfigError(RuntimeError):
@@ -35,6 +39,9 @@ class Settings:
     workers: int = 6
     script_max_chars: int = 60_000
     allow_write: bool = False
+    archive_space_id: str = ""
+    archive_map: dict = field(default_factory=dict)
+    snapshot_with_data: tuple = ()
 
     @property
     def host(self) -> str:
@@ -72,9 +79,18 @@ def load_settings(env: dict | None = None) -> Settings:
         max_chars = max(1_000, int(env.get("ARIADNE_SCRIPT_MAX_CHARS") or 60_000))
     except ValueError:
         max_chars = 60_000
+    amap = {}
+    for part in (env.get("ARIADNE_ARCHIVE_MAP") or "").split(";"):
+        if "=" in part:
+            pat, aid = part.split("=", 1)
+            if pat.strip() and aid.strip():
+                amap[pat.strip()] = aid.strip()
+    with_data = tuple(x.strip() for x in (env.get("ARIADNE_SNAPSHOT_WITH_DATA") or "").split(",") if x.strip())
     return Settings(tenant=tenant, api_key=key, workers=workers,
                     script_max_chars=max_chars,
-                    allow_write=(env.get("ARIADNE_ALLOW_WRITE") or "") == "1")
+                    allow_write=(env.get("ARIADNE_ALLOW_WRITE") or "") == "1",
+                    archive_space_id=(env.get("ARIADNE_ARCHIVE_SPACE_ID") or "").strip(),
+                    archive_map=amap, snapshot_with_data=with_data)
 
 
 def scrub(text: str, api_key: str) -> str:

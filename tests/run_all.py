@@ -24,6 +24,9 @@ COVERS = {
     "test_envelope": "the envelope: tri-state fields, coverage-driven confidence, refusals",
     "test_server": "every tool against a fake tenant: read-only, refusals as findings, key never leaks",
     "test_layers": "ariadne.qlik imports no MCP and no GUI",
+    "test_policy": "DELETE never sent, no Destroy method on the allowlist, writes behind the flag",
+    "test_snapshot": "snapshot before write: routing by rule, once per publish, without data, refused when ambiguous",
+    "test_writes": "apply master items: exact title, duplicates in full, near miss refused, no delete mode",
 }
 
 

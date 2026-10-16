@@ -36,6 +36,10 @@ Claude Desktop / Claude Code / any MCP client
 | | `compare_master_items` | Across apps: same name, different calculation (risk) and same calculation, different names (redundancy). |
 | | `find_unused_in_app` | Fields, master items and variables nothing on any sheet references. Lists dynamic expressions that hide usage. |
 | | `check_ownership` | Content whose owner is disabled, deleted, missing or unverifiable, by priority, plus owner concentration. |
+| | `compare_app_versions` | What differs between two apps (a snapshot and its source): script diff, variables, master items, sheet objects. |
+| Write | `snapshot_app` | The rollback snapshot of an app's published state: export without data, import into the archive space the routing rule selects, once per publish. Dry run by default. |
+| | `archive_app` | Move an app into an archive space. Never a copy, never a delete. Dry run by default. |
+| | `apply_master_items` | Create or update master measures and dimensions from definitions. Exact title, duplicates in full, near misses refused, snapshot first. Dry run by default. |
 
 Plus one prompt, `governance_review`, that runs these in an order that keeps
 coverage honest, and one resource, `ariadne://principles`.
@@ -80,6 +84,18 @@ ariadne analyze some_script.qvs   # load-script facts, no tenant needed
 | `QLIK_API_KEY` or `QLIK_API_KEY_FILE` | the key, or a file whose first line is the key | required |
 | `ARIADNE_WORKERS` | concurrent engine sessions for tenant-wide reads | 6 |
 | `ARIADNE_SCRIPT_MAX_CHARS` | characters of script returned per call | 60000 |
+| `ARIADNE_ALLOW_WRITE` | `1` enables the write tools for this process | off |
+| `ARIADNE_ARCHIVE_SPACE_ID` | default archive space for snapshots and `archive_app` | none (content writes refused) |
+| `ARIADNE_ARCHIVE_MAP` | `pattern=space_id;pattern=space_id`: a space id, or a glob on the space name, routes to that archive space | none |
+| `ARIADNE_SNAPSHOT_WITH_DATA` | app ids or name globs whose snapshots keep their data (apps that hold user-entered data) | none |
+
+Example for a tenant with two archive spaces:
+
+```bash
+export ARIADNE_ALLOW_WRITE=1
+export ARIADNE_ARCHIVE_SPACE_ID=6238963d4769f1ced8bf9931            # Archive
+export ARIADNE_ARCHIVE_MAP='*finance*=67d04f9b700c02cbea1f67e8'      # Archive - Finance
+```
 
 ### Claude Desktop
 
@@ -118,6 +134,29 @@ One process serves one tenant with one key. There is no per-user identity on
 this transport yet; put it behind your own authentication or keep it on stdio.
 See `docs/DESIGN.md` for the planned OAuth path.
 
+## Writes, and what is never done
+
+Writes are off unless `ARIADNE_ALLOW_WRITE=1`, and the key's own rights decide
+what can be changed. Three rules sit below every tool, in `ariadne.qlik.policy`,
+where no tool or prompt can widen them:
+
+- **Nothing is deleted.** The HTTP method DELETE is never sent. The Engine API
+  runs on an allowlist that holds no Destroy method. `apply_master_items` has
+  no delete mode. Moving to an archive space is allowed.
+- **A published app is snapshotted before it is changed.** If the app has a
+  published copy in a managed space, that copy is exported without data and
+  imported into the archive space the routing rule selects, named
+  `<app> <date> (published <publish date>)` and stamped so the next write after
+  the same publish takes no new snapshot. If the snapshot cannot be placed, the
+  write does not happen. `compare_app_versions` shows what a rollback would undo.
+- **A write never guesses.** Exact titles only; a near miss is refused and
+  named; a title carried by several items is updated on all of them and the
+  result says so. Every write tool defaults to `dry_run=true` and returns the
+  exact actions.
+
+Apps that will hold user-entered data (input and save) go in
+`ARIADNE_SNAPSHOT_WITH_DATA`; their snapshots keep the data.
+
 ## Beside the official Qlik MCP server
 
 Qlik's server (help pages dated 2026-10-15) is the right tool for analysis,
@@ -137,7 +176,7 @@ the official catalogue answers one object at a time or not at all.
 | Master items | List, create, update, delete (update and delete only for MCP-created items) | List, and compare across apps on a quote-aware key |
 | Ownership, unused items, extractors | Not in the catalogue | Yes, as prioritised worklists with evidence |
 | Uncertainty | Tool-specific; the official `qlik-ai-readiness-optimizer` skill itself warns that "absence of readable data isn't evidence of absence" | Every result: coverage counts, unknowns, limitations, confidence from coverage |
-| Writes | Many (apps, scripts, reloads, automations, glossary, data products, bookmarks) | None in this version |
+| Writes | Many (apps, scripts, reloads, automations, glossary, data products, bookmarks), including deletes of MCP-created items | Master items (create, update), snapshot, move to archive. No delete anywhere, dry run by default |
 
 Use both: the official server for doing, Ariadne for knowing how far the doing
 can be trusted.
@@ -160,9 +199,11 @@ these parsers were ported from, and prints what the defect was.
 
 ## Status
 
-Version 0.1.0: a read-only first iteration. `docs/DESIGN.md` holds the gap
-analysis against the official server, the decisions taken, the ones still open,
-and the roadmap.
+Version 0.2.0: read tools plus a guarded write path. `docs/DESIGN.md` holds
+the gap analysis against the official server, the write policy, the decisions
+taken, the ones still open, and the roadmap. `docs/ASSUMPTIONS.md` lists every
+platform behaviour Ariadne depends on and how to verify it on your tenant;
+the source application is a starting point, not a reference.
 
 ## License and provenance
 

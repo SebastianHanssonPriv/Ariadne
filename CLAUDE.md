@@ -78,11 +78,23 @@ runs against a fake tenant in `tests/test_server.py`.
 Every envelope carries `framing`. Keep it. A tool people trust to be certain is
 more dangerous than one they trust to be useful.
 
-## 10. Write nothing
+## 10. Writes: never delete, snapshot first, never guess
 
-Version 0.1 is read-only and every tool is annotated so. A write tool, when it
-comes, matches on the exact title, acts on all duplicates and says so, dry-runs
-by default, and is gated by `ARIADNE_ALLOW_WRITE=1`.
+`qlik/policy.py` sits under every REST and Engine call: DELETE is never sent,
+the Engine allowlist holds no Destroy method, and write methods need
+`ARIADNE_ALLOW_WRITE=1`. Add a method to the allowlist only with a test in
+`test_policy.py`. A write to an app with a published copy runs
+`snapshot.plan` and `snapshot.execute` first and does not proceed if the
+snapshot cannot be placed. `writes.apply_master` matches on the exact title,
+acts on all duplicates and says so, refuses near misses, and dry-runs by
+default. Routing to an archive space is by rule and refused when ambiguous.
+
+## 12. Eunomia is a starting point, not the truth
+
+The source application's rules were earned on one tenant and carry their own
+assumptions. Every platform behaviour Ariadne depends on is listed in
+`docs/ASSUMPTIONS.md` with how to verify it. When you port a rule, add its
+assumption there; when a tenant contradicts one, fix the code and the entry.
 
 ## 11. Style
 

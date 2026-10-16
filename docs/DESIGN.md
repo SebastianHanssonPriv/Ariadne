@@ -174,13 +174,40 @@ at all; whether the official server's M2M client is a viable backend.
 intended service key (how many scripts are readable), and one `trace_qvd`
 timing on the full estate (minutes, not an estimate).
 
-## 9. Roadmap
+## 9. Write policy (0.2)
+
+The tenant is used by a few skilled developers, so write rights stay bound
+to the key's user. Ariadne adds only what a key cannot enforce for itself:
+
+| Rule | Where it is enforced | Why there |
+|---|---|---|
+| Nothing is deleted | `policy.check_http` refuses DELETE; `policy.check_engine` allows only listed methods, none of them Destroy* | Under every call, so no tool, prompt or future code can delete |
+| A published app is snapshotted before it is changed | `snapshot.plan` and `snapshot.execute`, called by every content-write tool before the write | The snapshot is the rollback unit: script, variables, master items and visuals in one app |
+| Snapshot without data | Export with `NoData=true`, import into the archive space | Data comes back from the pipelines on reload; a copy with data costs capacity and adds nothing. Apps that will hold user-entered data are the exception list |
+| Once per publish | Marker in the snapshot's description keyed on source, copy and `publishTime` | "Every change since last published", independent of who made the change |
+| Routing by rule | `snapshot.route`: space id or name glob to archive space; default; refused when two rules match or the caller names a non-archive space | A write never guesses; the dry run shows the chosen space, and a refusal names the options so the model can ask |
+| Dry run by default | Every write tool | The exact actions are visible before anything happens |
+
+Rollback is a decision, so Ariadne shows what it would undo
+(`compare_app_versions`) rather than doing it. A `restore_snapshot` tool is
+a later item; until then rollback is republishing the snapshot, or copying it
+back as the new source, by a person.
+
+Retention: Ariadne never deletes, so archive copies accumulate. A listing of
+snapshots older than N days for a person to remove is a 0.3 item.
+
+Assumptions A3 to A7 in `docs/ASSUMPTIONS.md` carry this section; verify them
+on one test app with `snapshot_app` and `dry_run=false` before enabling writes
+for developers.
+
+## 10. Roadmap
 
 - **0.2** QVD field-level impact; orphan QVDs from the data-files inventory;
   progress reporting for long scans; `trace_qvd` across several names at once.
 - **0.3** Streamable HTTP with per-user identity (Qlik OAuth client, M2M);
   audit log of tool calls (who asked what, never the key).
-- **0.4** Write tools with dry-run default and the exact-title rule;
-  `ARIADNE_ALLOW_WRITE` gate; backup before write.
+- **0.3 (writes)** `restore_snapshot` (republish or copy back, dry run first);
+  snapshot retention listing; a probe tool that verifies A3 to A7 on one app;
+  on-disk export of the .qvf as an optional second line of defence.
 - **Later** Power BI counterpart (the source application has the analysis),
   a Qlik Automation that calls Ariadne on a schedule and files the worklist.

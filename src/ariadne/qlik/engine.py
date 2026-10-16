@@ -14,6 +14,7 @@ import re
 import websocket
 
 from ..config import normalize_host
+from .policy import check_engine
 
 _PERMANENT = ("access denied", "forbidden", "unauthorized", "not authorized",
               "app not found", "resource not found")
@@ -38,11 +39,13 @@ def is_permanent_error(msg: str) -> bool:
 
 
 class EngineSession:
-    def __init__(self, tenant: str, api_key: str, app_id: str, timeout: int = 60):
+    def __init__(self, tenant: str, api_key: str, app_id: str, timeout: int = 60,
+                 allow_write: bool = False):
         self.host = normalize_host(tenant)
         self.api_key = api_key
         self.app_id = app_id
         self.timeout = timeout
+        self.allow_write = allow_write
         self.id = 0
         self.ws = None
         self.app_h = None
@@ -56,6 +59,7 @@ class EngineSession:
         return self
 
     def call(self, handle, method, params):
+        check_engine(method, self.allow_write)
         self.id += 1
         self.ws.send(json.dumps({"jsonrpc": "2.0", "id": self.id, "handle": handle,
                                  "method": method, "params": params}))
@@ -221,6 +225,14 @@ class EngineSession:
 
     def lineage(self):
         return self.call(self.open(), "GetLineage", []).get("qLineage", []) or []
+
+    def do_save(self):
+        self.call(self.open(), "DoSave", [])
+
+    def bundle(self) -> dict:
+        """Everything compare_app_versions looks at, in one read."""
+        return {"script": self.get_script() or "", "variables": self.variables(),
+                "measures": self.measures(), "dimensions": self.dimensions(), "objects": self.objects()}
 
 
 # ------------------------------------------------------------ object walk

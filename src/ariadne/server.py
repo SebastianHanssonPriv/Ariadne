@@ -25,6 +25,10 @@ from . import __version__
 from .config import ConfigError, Settings, load_settings, scrub
 from .envelope import (SCRIPT_FIX, SCRIPT_RULE, coverage, envelope, failed, refused)
 from .qlik import bulk
+from .qlik import diff as D
+from .qlik import snapshot as SN
+from .qlik import writes as W
+from .qlik.policy import PolicyError
 from .qlik import expressions as X
 from .qlik import ownership as O
 from .qlik import script as S
@@ -36,6 +40,10 @@ PERSONAL_BLIND_SPOT = ("Apps in another user's Personal space are not listed by 
                        "list, not of the tenant.")
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False,
                             idempotent_hint=True, open_world_hint=True)
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                        idempotent_hint=False, open_world_hint=True)
+WRITE_OVERWRITES = ToolAnnotations(read_only_hint=False, destructive_hint=True,
+                                   idempotent_hint=False, open_world_hint=True)
 MAX_COMPARE_APPS = 25
 CACHE_TTL = 300
 
@@ -45,13 +53,21 @@ class Backend:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.rest = Rest(settings.tenant, settings.api_key)
+        self.rest = Rest(settings.tenant, settings.api_key, allow_write=settings.allow_write)
         self.facts = bulk.FactsCache()
         self._cache: dict[str, tuple[float, Any]] = {}
         self._lock = threading.Lock()
 
     def engine(self, app_id: str) -> EngineSession:
-        return EngineSession(self.settings.tenant, self.settings.api_key, app_id)
+        return EngineSession(self.settings.tenant, self.settings.api_key, app_id,
+                             allow_write=self.settings.allow_write)
+
+    def invalidate(self, key: str = ""):
+        with self._lock:
+            if key:
+                self._cache.pop(key, None)
+            else:
+                self._cache.clear()
 
     def read_script(self, app_id: str):
         return bulk.read_script(self.settings.tenant, self.settings.api_key, app_id)
@@ -102,6 +118,11 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
                     return fn(*a, **kw)
                 except ConfigError as e:
                     return failed(what, str(e))
+                except PolicyError as e:
+                    return refused(what, "Ariadne policy: nothing is deleted, writes need "
+                                   "ARIADNE_ALLOW_WRITE=1, and a published app is snapshotted "
+                                   "before it is changed.", "See docs/DESIGN.md, write policy.",
+                                   scrub(str(e), key()))
                 except EngineRefused as e:
                     return refused(what, SCRIPT_RULE, SCRIPT_FIX, scrub(str(e), key()))
                 except QlikHTTPError as e:
@@ -746,6 +767,157 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
                                      "A 404 on a user is evidence (no such user, or not visible to this "
                                      "key); any other failure is not."],
                         evidence=["Users API status passed through as reported"])
+
+    # ================================================================ WRITE
+    def _write_gate(what):
+        b = be()
+        if not b.settings.allow_write:
+            return refused(what, "Writes are disabled on this server (ARIADNE_ALLOW_WRITE is not 1).",
+                           "Enable writes only for the developers who hold the rights in Qlik; the key "
+                           "decides what can be changed, Ariadne decides what is never deleted.")
+        return None
+
+    def _app_by_id(b, app_id):
+        a = next((x for x in b.apps() if x["guid"] == app_id), None)
+        if a is None:
+            body = b.rest.app(app_id)
+            attrs = body.get("attributes", {}) or {}
+            a = {"name": attrs.get("name", ""), "guid": app_id, "space_id": attrs.get("spaceId") or "",
+                 "owner_id": attrs.get("ownerId") or "", "reloaded": attrs.get("lastReloadTime") or "",
+                 "published": None, "publish_time": attrs.get("publishTime") or "",
+                 "origin_app_id": attrs.get("originAppId") or "",
+                 "description": attrs.get("description") or ""}
+        return a
+
+    def _snapshot(b, app, explicit_archive, dry_run):
+        """Run the snapshot rule for `app`. Returns (plan, taken, refusal_or_None)."""
+        pl = SN.plan(app, b.apps(), b.spaces(), b.settings, explicit_archive)
+        taken = []
+        if pl.get("blocked"):
+            return pl, taken, refused(f"snapshot of {app['guid']}", "Ariadne policy: the archive space "
+                                      "must be one configured archive space and the routing rule must give "
+                                      "one answer.", "Pass archive_space_id, or extend ARIADNE_ARCHIVE_MAP.",
+                                      "; ".join(pl["blocked"]))
+        if dry_run:
+            return pl, taken, None
+        for item in pl["items"]:
+            if item["needed"]:
+                taken.append(SN.execute(b.rest, app, item, app.get("description") or ""))
+        if taken:
+            b.invalidate("apps")
+        return pl, taken, None
+
+    @srv.tool(annotations=WRITE)
+    @guarded("snapshot app")
+    def snapshot_app(app_id: str, archive_space_id: str = "", dry_run: bool = True) -> dict:
+        """Take the rollback snapshot of an app's published state: an export without data
+        (unless the app is listed in ARIADNE_SNAPSHOT_WITH_DATA) imported into the archive
+        space the routing rule selects, stamped so the next write after the same publish
+        takes none. dry_run=True (the default) shows the plan and the chosen archive space
+        and changes nothing. Pass archive_space_id to override the rule; it must be one of
+        the configured archive spaces."""
+        gate = _write_gate("snapshot app")
+        if gate:
+            return gate
+        b = be()
+        app = _app_by_id(b, app_id)
+        pl, taken, refusal = _snapshot(b, app, archive_space_id, dry_run)
+        if refusal:
+            return refusal
+        return envelope({"plan": pl, "taken": taken, "dry_run": dry_run},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        limitations=["A snapshot without data restores script, variables, master items "
+                                     "and visuals; data comes back on reload from the pipelines."],
+                        evidence=[pl["reason"]])
+
+    @srv.tool(annotations=WRITE)
+    @guarded("archive app")
+    def archive_app(app_id: str, archive_space_id: str = "", dry_run: bool = True) -> dict:
+        """Move an app into an archive space (the routing rule's choice, or archive_space_id if
+        it is one of the configured archive spaces). The app is moved, never copied or
+        deleted. dry_run=True shows the move without doing it."""
+        gate = _write_gate("archive app")
+        if gate:
+            return gate
+        b = be()
+        app = _app_by_id(b, app_id)
+        sp = b.spaces().get(app.get("space_id") or "") or {}
+        target, why = SN.route(app.get("space_id") or "", sp.get("name") or "", b.settings, archive_space_id)
+        if app.get("space_id") == target:
+            return envelope({"moved": False, "reason": "already in that archive space", "space_id": target},
+                            coverage=coverage(1, 1, scope=f"app {app_id}"))
+        if not dry_run:
+            b.rest.move_app(app_id, target)
+            b.invalidate("apps")
+            check = (b.rest.app(app_id).get("attributes") or {})
+            if (check.get("spaceId") or "") != target:
+                return failed("archive app", f"the tenant did not move {app_id}; it is in "
+                              f"{check.get('spaceId') or 'Personal'}")
+        return envelope({"moved": not dry_run, "dry_run": dry_run, "app": app["name"], "from_space": sp.get("name") or "Personal",
+                         "to_space_id": target, "routing": why},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"))
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("compare app versions")
+    def compare_app_versions(app_id: str, other_app_id: str) -> dict:
+        """What differs between two apps, typically a snapshot and the current source:
+        script (unified diff), variables, master measures and dimensions (added, removed,
+        changed on the comparison key), and sheet objects (added, removed, changed
+        expressions). This is what a rollback to the snapshot would undo."""
+        b = be()
+        with b.engine(app_id) as ea:
+            ba = ea.bundle()
+        with b.engine(other_app_id) as eb:
+            bb = eb.bundle()
+        res = D.compare_bundles(ba, bb)
+        return envelope(res, coverage=coverage(2, 2, scope=f"{app_id} vs {other_app_id}"),
+                        limitations=["Objects are compared on their expressions, type, title and master item "
+                                     "references, not on layout or styling.",
+                                     "Data is not compared."])
+
+    @srv.tool(annotations=WRITE_OVERWRITES)
+    @guarded("apply master items")
+    def apply_master_items(app_id: str, measures: list[dict] | None = None,
+                           dimensions: list[dict] | None = None, mode: str = "upsert",
+                           archive_space_id: str = "", dry_run: bool = True) -> dict:
+        """Create or update master measures and dimensions in an app from definitions
+        (measure: name, expression, label, label_expression, format_type, format_pattern,
+        description, tags; dimension: name, fields, field_labels, grouping, label_expression,
+        description, tags). Matches on the EXACT title; a near miss (case or padding) is
+        refused and named; a title carried by several items is updated on all of them and
+        says so. No delete mode exists. If the app has a published copy, its snapshot is
+        taken first (see snapshot_app) and the write does not run if that fails. dry_run=True
+        (the default) returns the exact actions and changes nothing."""
+        gate = _write_gate("apply master items")
+        if gate:
+            return gate
+        if mode not in W.MODES:
+            return refused("apply master items", "Ariadne creates and updates master items; it never deletes.",
+                           f"Use one of {W.MODES}.", f"mode={mode!r}")
+        b = be()
+        app = _app_by_id(b, app_id)
+        pl, taken, refusal = _snapshot(b, app, archive_space_id, dry_run)
+        if refusal:
+            return refusal
+        with b.engine(app_id) as eng:
+            rm = W.apply_master(eng, "measure", measures or [], mode, dry_run) if measures else None
+            rd = W.apply_master(eng, "dimension", dimensions or [], mode, dry_run) if dimensions else None
+            changed = sum((r["counts"]["created"] + r["counts"]["updated"]) for r in (rm, rd) if r)
+            saved = False
+            if changed and not dry_run:
+                eng.do_save()
+                saved = True
+        actions = (rm["actions"] if rm else []) + (rd["actions"] if rd else [])
+        ambiguous = [a for a in actions if a["action"] == "AMBIGUOUS"]
+        return envelope({"dry_run": dry_run, "snapshot": {"plan": pl, "taken": taken},
+                         "measures": rm["counts"] if rm else None, "dimensions": rd["counts"] if rd else None,
+                         "actions": actions, "saved": saved},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        unknowns=([f"{len(ambiguous)} definition(s) refused as ambiguous; fix the titles"]
+                                  if ambiguous else []),
+                        limitations=["A property the definition does not mention keeps its current value "
+                                     "(shallow merge)."],
+                        evidence=[f"{a['action']} {a['kind']} {a['name']!r}" for a in actions][:50])
 
     # ============================================================== PROMPTS
     @srv.prompt()

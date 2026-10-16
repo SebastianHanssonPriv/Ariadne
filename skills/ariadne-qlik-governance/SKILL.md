@@ -17,7 +17,7 @@ metadata:
     - mcp
     - governance
     - lineage
-allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership
+allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership compare_app_versions snapshot_app archive_app apply_master_items
 ---
 
 # Ariadne Qlik governance
@@ -50,6 +50,17 @@ Ariadne is read-only. Every tool returns an envelope: `data`, `coverage`,
    `compare_master_items` on up to 25 app ids.
 5. For cleanup candidates: `find_unused_in_app`. Always list the dynamic
    expressions it reports before recommending a deletion.
+
+## Writes
+
+`snapshot_app`, `archive_app` and `apply_master_items` change the tenant.
+Always call them with `dry_run=true` first, show the user the plan (including
+the archive space the routing rule chose), and run with `dry_run=false` only
+after an explicit yes. If a result has `access.state: "refused"` with a routing
+message, ask the user which configured archive space to use and pass it as
+`archive_space_id`. Never suggest deleting anything; Ariadne cannot, and the
+user's policy forbids it. After a write, offer `compare_app_versions` between
+the snapshot and the app to show what changed.
 
 Tenant-wide tools take minutes on large tenants. Narrow with `space_id` or
 `max_apps` when the question allows, and say that you did.
