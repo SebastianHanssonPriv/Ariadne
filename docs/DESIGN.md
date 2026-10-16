@@ -197,6 +197,14 @@ Rollback is a decision, so Ariadne shows what it would undo
 a later item; until then rollback is republishing the snapshot, or copying it
 back as the new source, by a person.
 
+Every change leaves a developer note in the script (approved by the user,
+inserted under the existing heading, verified insert-only) and a line in a
+local append-only audit log; a real write is refused without the log. A
+central register document on the tenant was considered and rejected: Qlik
+has no append-only document, a file register races between developers, and
+everything it would hold exists in the notes and the log. The register is a
+read tool instead (`list_developer_notes`).
+
 Retention: Ariadne never deletes, so archive copies accumulate. A listing of
 snapshots older than N days for a person to remove is a 0.3 item.
 

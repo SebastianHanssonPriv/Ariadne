@@ -17,7 +17,7 @@ metadata:
     - mcp
     - governance
     - lineage
-allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership compare_app_versions snapshot_app archive_app apply_master_items
+allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership compare_app_versions snapshot_app archive_app apply_master_items add_developer_note list_developer_notes read_audit_log
 ---
 
 # Ariadne Qlik governance
@@ -53,7 +53,10 @@ Ariadne is read-only. Every tool returns an envelope: `data`, `coverage`,
 
 ## Writes
 
-`snapshot_app`, `archive_app` and `apply_master_items` change the tenant.
+`snapshot_app`, `archive_app`, `apply_master_items` and `add_developer_note`
+change the tenant. A real `apply_master_items` needs `developer_note`: take
+the `proposed` text from the dry run, show it to the user, and pass back what
+they approve, edited or not. Never write a note the user has not seen.
 Always call them with `dry_run=true` first, show the user the plan (including
 the archive space the routing rule chose), and run with `dry_run=false` only
 after an explicit yes. If a result has `access.state: "refused"` with a routing

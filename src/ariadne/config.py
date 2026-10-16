@@ -14,6 +14,9 @@ settings file on disk would be a second place a key can leak from.
     ARIADNE_ARCHIVE_MAP        "pattern=space_id;pattern=space_id": a space id or a
                                glob on the space name routes to that archive space
     ARIADNE_SNAPSHOT_WITH_DATA "app_id,name glob,...": apps snapshotted WITH data
+    ARIADNE_AUDIT_LOG          path of the append-only JSONL audit log; a real write
+                               (dry_run=false) is refused without it
+    ARIADNE_AUDIT              "writes" (default), "all" (dry runs too) or "off"
 
 The key is stripped where it enters, because a key pasted with a trailing
 newline passes a connection test and then fails every request with
@@ -42,6 +45,8 @@ class Settings:
     archive_space_id: str = ""
     archive_map: dict = field(default_factory=dict)
     snapshot_with_data: tuple = ()
+    audit_log: str = ""
+    audit_mode: str = "writes"
 
     @property
     def host(self) -> str:
@@ -90,7 +95,9 @@ def load_settings(env: dict | None = None) -> Settings:
                     script_max_chars=max_chars,
                     allow_write=(env.get("ARIADNE_ALLOW_WRITE") or "") == "1",
                     archive_space_id=(env.get("ARIADNE_ARCHIVE_SPACE_ID") or "").strip(),
-                    archive_map=amap, snapshot_with_data=with_data)
+                    archive_map=amap, snapshot_with_data=with_data,
+                    audit_log=(env.get("ARIADNE_AUDIT_LOG") or "").strip(),
+                    audit_mode=(env.get("ARIADNE_AUDIT") or "writes").strip().lower() or "writes")
 
 
 def scrub(text: str, api_key: str) -> str:

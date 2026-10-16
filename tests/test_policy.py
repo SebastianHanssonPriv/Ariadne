@@ -36,7 +36,7 @@ check("a read-only Rest refuses PUT before any network call", refused(r0._raw, "
 print("Engine:")
 check("GetScript allowed", not refused(P.check_engine, "GetScript", False))
 for m in ("DestroyMeasure", "DestroyDimension", "DestroyVariable", "DestroyBookmark", "DeleteApp",
-          "SetScript", "RemoveAlternateState", "ClearAll"):
+          "RemoveAlternateState", "ClearAll", "DeleteScript"):
     check(f"{m} is not on the allowlist, writes enabled", refused(P.check_engine, m, True))
 check("DestroySessionObject is allowed (a session object is not an entity)",
       not refused(P.check_engine, "DestroySessionObject", False))
@@ -44,6 +44,10 @@ check("CreateMeasure refused without the flag", refused(P.check_engine, "CreateM
 check("CreateMeasure allowed with the flag", not refused(P.check_engine, "CreateMeasure", True))
 e = EngineSession("t.eu.qlikcloud.com", "k", "app", allow_write=True)
 check("EngineSession.call refuses DestroyMeasure before touching the socket", refused(e.call, 1, "DestroyMeasure", ["x"]))
+check("SetScript refused without the flag", refused(P.check_engine, "SetScript", False))
+check("SetScript allowed with the flag (only through set_script_inserted)", not refused(P.check_engine, "SetScript", True))
+check("set_script_inserted refuses a change that is not the inserted note, before the socket",
+      refused(e.set_script_inserted, "A\nB", "A\nX\nB", ["Y"]))
 print("metadata only, by construction:")
 for m in ("GetHyperCubeData", "GetListObjectData", "GetFieldValues", "GetHyperCubeStackData", "ExportData",
           "GetTableData", "SearchValues", "GetAssociativeInsights", "SelectValues", "GetHyperCubeContinuousData"):

@@ -18,6 +18,7 @@ SCRIPTS = {
     "rep": "SET vQVD = 'lib://QVD/';\nOrders:\nLOAD * FROM [$(vQVD)Orders.qvd](qvd);",
     "dyn": "LET vT = Upper('orders');\nT:\nLOAD * FROM [lib://QVD/$(vT).qvd](qvd);",
 }
+SCRIPTS["rep"] = "///$tab Change log\n/*\n- 2026-09-01 - Anna B.:\n\t- first version;\n*/\n" + SCRIPTS["rep"]
 SCRIPTS["rep_pub"] = SCRIPTS["rep"]
 SCRIPTS["ext"] += "\nMap:\nMapping LOAD * INLINE [\nCode, Customer\nA, Acme AB\n];"
 ARCH, ARCH_FIN = "6238963d4769f1ced8bf9931", "67d04f9b700c02cbea1f67e8"
@@ -96,7 +97,17 @@ class FakeEngine:
         from ariadne.qlik.script import redact_inline
         if self.app_id == "locked":
             raise EngineRefused(f"Access denied (code 403) key={KEY}")
-        return redact_inline(SCRIPTS[self.app_id])
+        return redact_inline(SCRIPTS.get(self.app_id, ""))
+    def get_script_raw(self):
+        if self.app_id == "locked":
+            raise EngineRefused(f"Access denied (code 403) key={KEY}")
+        return SCRIPTS.get(self.app_id, "")
+    def set_script_inserted(self, old, new, inserted):
+        from ariadne.qlik.devnote import verify_insert
+        pos = verify_insert(old, new, inserted)
+        FakeEngine.engine_calls.append((self.app_id, "SetScript"))
+        SCRIPTS[self.app_id] = new
+        return pos
     def measures(self):
         if self.app_id == "locked":
             raise EngineRefused(f"Access denied (code 403) key={KEY}")
@@ -136,10 +147,14 @@ class FakeEngine:
     def do_save(self): FakeEngine.engine_calls.append((self.app_id, "DoSave"))
 
 
+import os, tempfile
+AUDIT = os.path.join(tempfile.mkdtemp(), "ariadne-audit.jsonl")
+
+
 class FakeBackend(Backend):
-    def __init__(self, allow_write=False):
+    def __init__(self, allow_write=False, audit=AUDIT):
         super().__init__(Settings(tenant="t.eu.qlikcloud.com", api_key=KEY, workers=2, allow_write=allow_write,
-                                  archive_space_id=ARCH, archive_map={"*finance*": ARCH_FIN}))
+                                  archive_space_id=ARCH, archive_map={"*finance*": ARCH_FIN}, audit_log=audit))
         self.rest = FakeRest()
     def engine(self, app_id): return FakeEngine(app_id)
     def read_script(self, app_id):
@@ -181,9 +196,9 @@ def call(name, **args):
 tools = asyncio.run(srv.list_tools())
 names = sorted(t.name for t in tools)
 print("surface:")
-check("17 tools registered", len(names) == 17, names)
+check("20 tools registered", len(names) == 20, names)
 check("the four write-path tools are annotated as not read-only, the rest read-only",
-      {t.name for t in tools if not t.annotations.read_only_hint} == {"snapshot_app", "archive_app", "apply_master_items"})
+      {t.name for t in tools if not t.annotations.read_only_hint} == {"snapshot_app", "archive_app", "apply_master_items", "add_developer_note"})
 check("every tool carries annotations", all(t.annotations for t in tools))
 check("every tool has a description", all((t.description or "").strip() for t in tools))
 
@@ -284,17 +299,58 @@ check("dry run plans a snapshot of the published copy into Archive - Finance, no
       and it["with_data"] is False and it["needed"] and not wb.rest.writes)
 r = wcall("snapshot_app", app_id="rep", archive_space_id="deadbeef")
 check("an archive space outside the configured ones is refused", r["access"]["state"] == "refused")
+r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"}], dry_run=False)
+check("a real write without an approved note is refused, nothing written", r["access"]["state"] == "refused"
+      and not wb.rest.writes and not any(m == "DoSave" for _, m in FakeEngine.engine_calls))
+r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"}], dry_run=True)
+proposed = r["data"]["developer_note"]["proposed"]
+check("the dry run proposes a note and shows where it would go", "updated master measures: Net Sales" in proposed
+      and r["data"]["developer_note"]["record"]["inserted_at_line"] == 4 and not wb.rest.writes)
+check("a dry run is not in the audit log (mode writes)", not os.path.exists(AUDIT))
 r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"},
-                                                        {"name": "net sales", "expression": "x"}], dry_run=False)
+                                                        {"name": "net sales", "expression": "x"}],
+          developer_note=proposed, dry_run=False)
 w = wb.rest.writes
 check("snapshot taken first: export without data, import into Archive - Finance, marker written",
       w[0] == ("export", "rep_pub", True) and w[1][0] == "import" and w[1][2] == ARCH_FIN and w[2][0] == "describe")
-check("then the write: update applied, near miss refused, saved once",
+check("then the write: update applied, near miss refused, saved after the change and after the note",
       r["data"]["measures"]["updated"] == 1 and r["data"]["measures"]["ambiguous"] == 1 and r["data"]["saved"]
-      and [m for a, m in FakeEngine.engine_calls if m == "DoSave"] == ["DoSave"])
+      and [m for a, m in FakeEngine.engine_calls if m == "DoSave"] == ["DoSave", "DoSave"])
 check("the snapshot is reported with the write", r["data"]["snapshot"]["taken"][0]["copy_of"] == "rep_pub")
+check("the approved note is appended in the block, in the house form, after the older entry",
+      SCRIPTS["rep"].split("\n")[4].startswith("- 2026-") and "- svc (via Ariadne, apply_master_items):" in SCRIPTS["rep"].split("\n")[4]
+      and SCRIPTS["rep"].split("\n")[5] == "\t- updated master measures: Net Sales;"
+      and SCRIPTS["rep"].split("\n")[2] == "- 2026-09-01 - Anna B.:"
+      and r["data"]["developer_note"]["record"]["written"] is True)
+check("SetScript was sent once, then DoSave again", [m for _, m in FakeEngine.engine_calls if m == "SetScript"] == ["SetScript"])
+import json as _json
+entries = [_json.loads(l) for l in open(AUDIT, encoding="utf-8")]
+check("the audit log holds the write with note and snapshot id, and no key",
+      len(entries) == 1 and entries[0]["tool"] == "apply_master_items" and entries[0]["developer_note"] == proposed
+      and entries[0]["snapshot_ids"] and KEY not in open(AUDIT).read())
+r = wcall("add_developer_note", app_id="ext", note="manual fix of the Orders join", dry_run=False)
+check("an app without a block: note refused, nothing sent", r["access"]["state"] == "refused" and "block" in r["access"]["detail"])
+r = wcall("add_developer_note", app_id="rep", note="manual fix of the Orders join", dry_run=False)
+check("a standalone note is inserted and logged", r["data"]["note"]["written"] and "manual fix" in SCRIPTS["rep"]
+      and len(open(AUDIT).read().strip().split("\n")) == 2)
+r = wcall("list_developer_notes")
+rows = {x["app_id"]: x for x in r["data"]["apps"]}
+check("the register lists the parsed entries per app and the apps without a block",
+      "rep" in rows and [e["date"] for e in rows["rep"]["entries"]][:1] == ["2026-09-01"] and len(rows["rep"]["entries"]) == 3
+      and r["data"]["apps_without_heading"] >= 2)
+check("the register lists the snapshots from the archive markers", any(sn["copy_of"] == "rep_pub" for sn in r["data"]["snapshots"]))
+r = wcall("list_developer_notes", ariadne_only=True)
+check("ariadne_only keeps the stamped entries", all(e["via_ariadne"] for x in r["data"]["apps"] for e in x["entries"]))
+r = wcall("read_audit_log", limit=10)
+check("the audit log reads back", len(r["data"]["entries"]) == 2)
+nb = FakeBackend(allow_write=True, audit="")
+nsrv = build_server(backend=nb)
+res = asyncio.run(nsrv.call_tool("snapshot_app", {"app_id": "rep", "dry_run": False}))
+r = json.loads("".join(c.text for c in res.content if getattr(c, "type", "") == "text"))
+check("a real write without an audit log configured is refused", r["access"]["state"] == "refused" and "audit" in r["access"]["rule"].lower())
 n = len(wb.rest.writes)
-r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"}], dry_run=False)
+r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"}],
+          developer_note="second pass", dry_run=False)
 check("second write after the same publish takes no new snapshot", len(wb.rest.writes) == n
       and r["data"]["snapshot"]["plan"]["items"][0]["needed"] is False)
 r = wcall("apply_master_items", app_id="ext", measures=[{"name": "X", "expression": "1"}], dry_run=True)

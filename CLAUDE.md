@@ -96,6 +96,14 @@ assumptions. Every platform behaviour Ariadne depends on is listed in
 `docs/ASSUMPTIONS.md` with how to verify it. When you port a rule, add its
 assumption there; when a tenant contradicts one, fix the code and the entry.
 
+## 11a. SetScript only as an insertion
+
+`SetScript` replaces the whole script. It is sent only by
+`EngineSession.set_script_inserted`, which verifies with `devnote.verify_insert`
+that the new script is the old one plus the inserted lines and nothing else.
+Never call `SetScript` any other way. The developer-notes heading is found by
+`devnote.find_sections`; no heading means refuse, never invent one.
+
 ## 11. No data, ever
 
 `qlik/policy.py` holds no Engine method that returns values, allows only

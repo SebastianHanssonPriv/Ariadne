@@ -16,6 +16,7 @@ import websocket
 from ..config import normalize_host
 from .policy import check_engine
 from .script import redact_inline
+from .devnote import verify_insert
 
 _PERMANENT = ("access denied", "forbidden", "unauthorized", "not authorized",
               "app not found", "resource not found")
@@ -236,6 +237,19 @@ class EngineSession:
 
     def do_save(self):
         self.call(self.open(), "DoSave", [])
+
+    def get_script_raw(self) -> str:
+        """The script as stored, for a write-back only. Never returned to a
+        tool result; get_script is what results see."""
+        return self.call(self.open(), "GetScript", [])["qScript"] or ""
+
+    def set_script_inserted(self, old: str, new: str, inserted_lines: list) -> int:
+        """The only way Ariadne sends SetScript: `new` must be `old` with
+        exactly `inserted_lines` inserted. Verified here, after the caller
+        verified it too, because this is where the socket is."""
+        pos = verify_insert(old, new, inserted_lines)
+        self.call(self.open(), "SetScript", [new])
+        return pos
 
     def bundle(self) -> dict:
         """Everything compare_app_versions looks at, in one read."""

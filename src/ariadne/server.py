@@ -25,6 +25,8 @@ from . import __version__
 from .config import ConfigError, Settings, load_settings, scrub
 from .envelope import (SCRIPT_FIX, SCRIPT_RULE, coverage, envelope, failed, refused)
 from .qlik import bulk
+from .qlik import audit as AU
+from .qlik import devnote as DN
 from .qlik import diff as D
 from .qlik import snapshot as SN
 from .qlik import writes as W
@@ -55,6 +57,7 @@ class Backend:
         self.settings = settings
         self.rest = Rest(settings.tenant, settings.api_key, allow_write=settings.allow_write)
         self.facts = bulk.FactsCache()
+        self.audit = AU.AuditLog(settings.audit_log, settings.audit_mode)
         self._cache: dict[str, tuple[float, Any]] = {}
         self._lock = threading.Lock()
 
@@ -816,7 +819,7 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
         takes none. dry_run=True (the default) shows the plan and the chosen archive space
         and changes nothing. Pass archive_space_id to override the rule; it must be one of
         the configured archive spaces."""
-        gate = _write_gate("snapshot app")
+        gate = _write_gate("snapshot app") or _audit_gate(be(), dry_run)
         if gate:
             return gate
         b = be()
@@ -824,6 +827,9 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
         pl, taken, refusal = _snapshot(b, app, archive_space_id, dry_run)
         if refusal:
             return refusal
+        b.audit.record(tool="snapshot_app", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"needed": sum(1 for i in pl.get("items", []) if i.get("needed"))},
+                       snapshot_ids=[t["snapshot_id"] for t in taken])
         return envelope({"plan": pl, "taken": taken, "dry_run": dry_run},
                         coverage=coverage(1, 1, scope=f"app {app_id}"),
                         limitations=["A snapshot without data restores script, variables, master items "
@@ -836,7 +842,7 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
         """Move an app into an archive space (the routing rule's choice, or archive_space_id if
         it is one of the configured archive spaces). The app is moved, never copied or
         deleted. dry_run=True shows the move without doing it."""
-        gate = _write_gate("archive app")
+        gate = _write_gate("archive app") or _audit_gate(be(), dry_run)
         if gate:
             return gate
         b = be()
@@ -853,6 +859,8 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
             if (check.get("spaceId") or "") != target:
                 return failed("archive app", f"the tenant did not move {app_id}; it is in "
                               f"{check.get('spaceId') or 'Personal'}")
+        b.audit.record(tool="archive_app", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"to_space_id": target, "routing": why})
         return envelope({"moved": not dry_run, "dry_run": dry_run, "app": app["name"], "from_space": sp.get("name") or "Personal",
                          "to_space_id": target, "routing": why},
                         coverage=coverage(1, 1, scope=f"app {app_id}"))
@@ -879,7 +887,8 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
     @guarded("apply master items")
     def apply_master_items(app_id: str, measures: list[dict] | None = None,
                            dimensions: list[dict] | None = None, mode: str = "upsert",
-                           archive_space_id: str = "", dry_run: bool = True) -> dict:
+                           archive_space_id: str = "", developer_note: str = "",
+                           block_line: int = -1, dry_run: bool = True) -> dict:
         """Create or update master measures and dimensions in an app from definitions
         (measure: name, expression, label, label_expression, format_type, format_pattern,
         description, tags; dimension: name, fields, field_labels, grouping, label_expression,
@@ -887,10 +896,17 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
         refused and named; a title carried by several items is updated on all of them and
         says so. No delete mode exists. If the app has a published copy, its snapshot is
         taken first (see snapshot_app) and the write does not run if that fails. dry_run=True
-        (the default) returns the exact actions and changes nothing."""
-        gate = _write_gate("apply master items")
+        (the default) returns the exact actions, a proposed developer note, and changes
+        nothing. A real run requires developer_note (the proposed text, approved or edited by
+        the user); it is written into the script's developer-notes section after the change
+        and the call is recorded in the audit log."""
+        gate = _write_gate("apply master items") or _audit_gate(be(), dry_run)
         if gate:
             return gate
+        if not dry_run and not (developer_note or "").strip():
+            return refused("apply master items", "A real write requires an approved developer note.",
+                           "Run with dry_run=true, show the proposed note to the user, and pass the "
+                           "approved text as developer_note.")
         if mode not in W.MODES:
             return refused("apply master items", "Ariadne creates and updates master items; it never deletes.",
                            f"Use one of {W.MODES}.", f"mode={mode!r}")
@@ -909,15 +925,153 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
                 saved = True
         actions = (rm["actions"] if rm else []) + (rd["actions"] if rd else [])
         ambiguous = [a for a in actions if a["action"] == "AMBIGUOUS"]
+        snap_ids = [t["snapshot_id"] for t in taken]
+        proposed = DN.propose("apply_master_items", actions, [t["name"] for t in taken])
+        note_rec, note_problem = None, ""
+        hl = block_line if block_line >= 0 else None
+        if dry_run:
+            try:
+                note_rec = _write_note(b, app_id, developer_note or proposed, "apply_master_items", hl, True)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        elif saved:
+            try:
+                note_rec = _write_note(b, app_id, developer_note, "apply_master_items", hl, False)
+            except PolicyError as e:
+                note_problem = scrub(str(e), key())
+        b.audit.record(tool="apply_master_items", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"measures": rm["counts"] if rm else None, "dimensions": rd["counts"] if rd else None,
+                                "actions": [f"{a['action']} {a['kind']} {a['name']}" for a in actions][:100],
+                                "saved": saved, "note_written": bool(note_rec and note_rec.get("written")),
+                                "note_problem": note_problem},
+                       note=(developer_note or proposed), snapshot_ids=snap_ids)
+        lim = ["A property the definition does not mention keeps its current value (shallow merge)."]
+        if note_problem:
+            lim.append("The developer note could not be written: " + note_problem
+                       + (" The change itself was saved." if saved else ""))
         return envelope({"dry_run": dry_run, "snapshot": {"plan": pl, "taken": taken},
                          "measures": rm["counts"] if rm else None, "dimensions": rd["counts"] if rd else None,
-                         "actions": actions, "saved": saved},
+                         "actions": actions, "saved": saved,
+                         "developer_note": {"proposed": proposed, "approved": developer_note or "",
+                                            "record": note_rec, "problem": note_problem}},
                         coverage=coverage(1, 1, scope=f"app {app_id}"),
                         unknowns=([f"{len(ambiguous)} definition(s) refused as ambiguous; fix the titles"]
                                   if ambiguous else []),
-                        limitations=["A property the definition does not mention keeps its current value "
-                                     "(shallow merge)."],
+                        limitations=lim,
                         evidence=[f"{a['action']} {a['kind']} {a['name']!r}" for a in actions][:50])
+
+    # ======================================================== NOTES, AUDIT
+    def _audit_gate(b, dry_run):
+        if not dry_run and not b.audit.enabled:
+            return refused("write", "A real write requires the audit log (ARIADNE_AUDIT_LOG) to be configured.",
+                           "Set ARIADNE_AUDIT_LOG to an append-only file in a folder reviewers can read, "
+                           "or run with dry_run=true.")
+        return None
+
+    def _write_note(b, app_id, note, tool, block_line, dry_run):
+        """Append the approved note at the bottom of the developer-notes block.
+        Returns the note record for the result; raises PolicyError when refused."""
+        me = b.me() or {}
+        with b.engine(app_id) as eng:
+            old = eng.get_script_raw()
+            entry = DN.format_entry(note, DN.author_tag(me.get("name", ""), me.get("id", "")), tool)
+            new, pos, heading = DN.insert(old, entry, block_line)
+            if not dry_run:
+                eng.set_script_inserted(old, new, entry)
+                eng.do_save()
+        return {"inserted_at_line": pos, "block": heading, "lines": entry, "written": not dry_run}
+
+    @srv.tool(annotations=WRITE)
+    @guarded("add developer note")
+    def add_developer_note(app_id: str, note: str, block_line: int = -1, dry_run: bool = True) -> dict:
+        """Append an approved developer note to the app's developer-notes block in the load
+        script: the /* ... */ block that holds entries like '- 2026-05-10 - Name L.:' with
+        tab-indented bullets (or an empty block under a 'change log' / 'developer notes' /
+        'developer log' heading). The entry goes at the bottom, before '*/', in that form,
+        with the user's name and 'via Ariadne'; ';' or line breaks in the note become
+        bullets. The script sent back is verified to be the old script plus the entry and
+        nothing else. Refused when no block exists (Ariadne does not invent one) or several
+        do (pass block_line). dry_run=True shows the exact lines and their position."""
+        gate = _write_gate("add developer note") or _audit_gate(be(), dry_run)
+        if gate:
+            return gate
+        b = be()
+        app = _app_by_id(b, app_id)
+        pl, taken, refusal = _snapshot(b, app, "", dry_run)
+        if refusal:
+            return refusal
+        rec = _write_note(b, app_id, note, "add_developer_note", (block_line if block_line >= 0 else None), dry_run)
+        b.audit.record(tool="add_developer_note", user=b.me(), app_id=app_id, dry_run=dry_run,
+                       summary={"inserted_at_line": rec["inserted_at_line"]}, note=note,
+                       snapshot_ids=[t["snapshot_id"] for t in taken])
+        return envelope({"dry_run": dry_run, "note": rec, "snapshot": {"plan": pl, "taken": taken}},
+                        coverage=coverage(1, 1, scope=f"app {app_id}"),
+                        evidence=[f"block: {rec['block']!r}"])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("list developer notes")
+    def list_developer_notes(space_id: str = "", app_id: str = "", max_apps: int = 0,
+                             ariadne_only: bool = False) -> dict:
+        """The register: every app's developer-notes block (entries with date, author and
+        bullets) read from the scripts this key can read, plus the snapshots in the archive
+        spaces with their markers. ariadne_only keeps the entries stamped 'via Ariadne'.
+        Coverage says how many scripts were read; an app without a block is counted as such,
+        not as 'no changes'."""
+        b = be()
+        if app_id:
+            apps, total = [_app_by_id(b, app_id)], 1
+            facts, cov, errors = b.facts_for(apps)
+        else:
+            b, apps, total, facts, cov, errors = _facts_scan(space_id, max_apps)
+        spaces = b.spaces()
+        rows, no_heading, unread = [], 0, 0
+        for a in apps:
+            f = facts.get(a["guid"]) or S.UNREADABLE
+            dn = f.get("devnotes") or {}
+            if f["source_kind"] == "unread":
+                unread += 1
+                continue
+            if not dn.get("found"):
+                no_heading += 1
+                continue
+            entries = dn["ariadne_entries"] if ariadne_only else dn["entries"]
+            if entries or not ariadne_only:
+                rows.append({"app": a["name"], "app_id": a["guid"],
+                             "space": _space_label(spaces, a.get("space_id"))[0],
+                             "block": dn["blocks"][0]["heading"] if dn.get("blocks") else "",
+                             "entries": entries[:200]})
+        archives = SN.archive_spaces(b.settings)
+        snaps = []
+        for a in b.apps():
+            if a.get("space_id") in archives:
+                m = SN.parse_marker(a.get("description") or "")
+                if m:
+                    snaps.append({"snapshot": a["name"], "snapshot_id": a["guid"], **m})
+        snaps.sort(key=lambda x: x["taken"], reverse=True)
+        c = _tenant_coverage(cov, total, f"load scripts of {len(apps)} app(s)")
+        unknowns = []
+        if unread:
+            unknowns.append(f"{unread} app(s) could not be read; their notes are unknown")
+        return envelope({"apps": rows, "apps_without_heading": no_heading, "unread_count": unread,
+                         "snapshots": snaps[:500]},
+                        coverage=c, unknowns=unknowns, limitations=_script_limitations(cov),
+                        evidence=["a notes block holds '- YYYY-MM-DD - Name L.:' entries, or follows a change log / "
+                                  "developer notes / developer log heading"])
+
+    @srv.tool(annotations=READ_ONLY)
+    @guarded("read audit log")
+    def read_audit_log(limit: int = 100, app_id: str = "") -> dict:
+        """The last entries of Ariadne's own audit log: timestamp, user, tool, app, dry run or
+        real, actions, developer note, snapshot ids. The log is a local append-only file
+        (ARIADNE_AUDIT_LOG); it holds no key and no script text."""
+        b = be()
+        if not b.audit.path:
+            return failed("read audit log", "ARIADNE_AUDIT_LOG is not configured")
+        rows = b.audit.read(limit, app_id)
+        return envelope({"entries": rows, "path_configured": True, "mode": b.audit.mode},
+                        coverage=coverage(1, 1, scope="local audit log", returned=len(rows)),
+                        limitations=["Only changes made through this Ariadne configuration are here; "
+                                     "changes made in the Qlik UI or by other tools are not."])
 
     # ============================================================== PROMPTS
     @srv.prompt()

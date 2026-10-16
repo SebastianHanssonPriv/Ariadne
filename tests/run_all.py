@@ -27,6 +27,7 @@ COVERS = {
     "test_policy": "DELETE never sent, no Destroy method on the allowlist, writes behind the flag",
     "test_snapshot": "snapshot before write: routing by rule, once per publish, without data, refused when ambiguous",
     "test_writes": "apply master items: exact title, duplicates in full, near miss refused, no delete mode",
+    "test_devnote": "developer note: the /* */ block, house entry form, appended before */, insert-only guard",
 }
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ariadne-qlik-mcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "Ariadne: a governance-grade MCP server for Qlik Cloud. Lineage, load-script facts, master-item consistency and ownership, with every answer carrying its own coverage and uncertainty."
 readme = "README.md"
 requires-python = ">=3.10"

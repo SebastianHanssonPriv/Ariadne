@@ -20,6 +20,7 @@ trusting a result that rests on it, and update this file when you do.
 | A9 | Qlik throttles REST at roughly 20 lineage calls in a burst (429 with Retry-After). | Source application (observed) | Medium | Watch `coverage.failed` on a tenant-wide tool; a 429 is retried and should not appear. |
 | A10 | Master item properties update through `GetMeasure`/`GetDimension` + `SetProperties` with a shallow merge, and persist on `DoSave`. | Qlik Engine API reference; source application | High | `apply_master_items` with `dry_run=false` on a test app, then `get_master_items`. |
 | A11 | The Items API `description` carries the app description so the snapshot marker is visible in listings. | Qlik Items API | Medium | After a snapshot, `list_apps` filtered to the archive space shows the marker in `description`. |
+| A13 | `SetScript` followed by `DoSave` persists the script of the source app, and the developer-notes heading survives as a comment Qlik does not rewrite. | Qlik Engine API reference | High | `add_developer_note` with `dry_run=false` on a test app, then `get_load_script`. |
 | A12 | Variables listed with `qShowReserved` and `qShowConfig` include every variable usage analysis should see. | Source application | Medium | Compare `get_master_items` variable count with the app's variable panel. |
 
 Confidence levels: High means documented by Qlik and exercised by the source
