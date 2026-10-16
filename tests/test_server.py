@@ -306,7 +306,7 @@ r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "e
 proposed = r["data"]["developer_note"]["proposed"]
 check("the dry run proposes a note and shows where it would go", "updated master measures: Net Sales" in proposed
       and r["data"]["developer_note"]["record"]["inserted_at_line"] == 4 and not wb.rest.writes)
-check("a dry run is not in the audit log (mode writes)", not os.path.exists(AUDIT))
+check("a dry run is not in the audit log (mode writes)", (not os.path.exists(AUDIT)) or os.path.getsize(AUDIT) == 0)
 r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"},
                                                         {"name": "net sales", "expression": "x"}],
           developer_note=proposed, dry_run=False)
