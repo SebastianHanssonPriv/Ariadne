@@ -25,7 +25,7 @@ ENGINE_READ = frozenset({
     "GetMeasure", "GetDimension", "GetProperties", "GetTablesAndKeys",
     "GetObject", "GetFullPropertyTree", "GetLineage", "GetVariableByName",
 })
-ENGINE_WRITE = frozenset({"CreateMeasure", "CreateDimension", "SetProperties", "DoSave"})
+ENGINE_WRITE = frozenset({"CreateMeasure", "CreateDimension", "SetProperties", "DoSave", "SetScript"})
 
 # The only session objects Ariadne creates: metadata listings. A hypercube or
 # a list object would return data pages through GetLayout, so the definition

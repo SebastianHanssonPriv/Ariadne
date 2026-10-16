@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 
-FACTS_VERSION = 5   # 5: a preceding LOAD and its SQL SELECT are one table, not two
+FACTS_VERSION = 6   # 6: the developer-notes section is part of the facts
 
 
 # ----------------------------------------------------------------- comments
@@ -481,15 +481,18 @@ def facts_from_script(script: str) -> dict:
     files, _u = extract_file_refs(script, with_unresolved=True)
     reads = files - stores
     loads_external, source_kind = classify_external_load(script)
+    from .devnote import read_section
     return {
         "stores": stores, "reads": reads,
         "loads_external": loads_external, "source_kind": source_kind,
         "unresolved": unresolved,
+        "devnotes": read_section(script),
     }
 
 
 UNREADABLE = {"stores": set(), "reads": set(), "loads_external": None,
-              "source_kind": "unread", "unresolved": set()}
+              "source_kind": "unread", "unresolved": set(),
+              "devnotes": {"found": None, "blocks": [], "entries": [], "ariadne_entries": []}}
 
 
 def extractor_reason(f: dict | None) -> str:

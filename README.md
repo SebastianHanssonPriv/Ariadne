@@ -39,7 +39,10 @@ Claude Desktop / Claude Code / any MCP client
 | | `compare_app_versions` | What differs between two apps (a snapshot and its source): script diff, variables, master items, sheet objects. |
 | Write | `snapshot_app` | The rollback snapshot of an app's published state: export without data, import into the archive space the routing rule selects, once per publish. Dry run by default. |
 | | `archive_app` | Move an app into an archive space. Never a copy, never a delete. Dry run by default. |
-| | `apply_master_items` | Create or update master measures and dimensions from definitions. Exact title, duplicates in full, near misses refused, snapshot first. Dry run by default. |
+| | `apply_master_items` | Create or update master measures and dimensions from definitions. Exact title, duplicates in full, near misses refused, snapshot first, approved developer note after. Dry run by default. |
+| | `add_developer_note` | Insert an approved note under the script's developer-notes heading. Insert-only, verified. Dry run by default. |
+| Audit | `list_developer_notes` | The register: every app's developer-notes section across readable scripts, plus the snapshots in the archive spaces. |
+| | `read_audit_log` | The last entries of Ariadne's own append-only log of writes. |
 
 Plus one prompt, `governance_review`, that runs these in an order that keeps
 coverage honest, and one resource, `ariadne://principles`.
@@ -88,6 +91,8 @@ ariadne analyze some_script.qvs   # load-script facts, no tenant needed
 | `ARIADNE_ARCHIVE_SPACE_ID` | default archive space for snapshots and `archive_app` | none (content writes refused) |
 | `ARIADNE_ARCHIVE_MAP` | `pattern=space_id;pattern=space_id`: a space id, or a glob on the space name, routes to that archive space | none |
 | `ARIADNE_SNAPSHOT_WITH_DATA` | app ids or name globs whose snapshots keep their data (apps that hold user-entered data) | none |
+| `ARIADNE_AUDIT_LOG` | path of the append-only JSONL audit log; a real write is refused when it cannot be appended to | a per-user file on this machine |
+| `ARIADNE_AUDIT` | `writes` (default), `all` (dry runs too) or `off` | writes |
 
 Example for a tenant with two archive spaces:
 
@@ -184,6 +189,45 @@ where no tool or prompt can widen them:
 Apps that will hold user-entered data (input and save) go in
 `ARIADNE_SNAPSHOT_WITH_DATA`; their snapshots keep the data.
 
+### The developer note and the audit log
+
+Every change through Ariadne leaves two records.
+
+- **A developer note in the load script.** Your scripts carry a `/* ... */`
+  block that holds only notes, oldest first, in this form:
+
+  ```
+  /*
+  - 2026-05-10 - Sebastian H.:
+  	- Added export section for Benchmark;
+  */
+  ```
+
+  Ariadne finds the block by its entries, or by a "change log", "developer
+  notes" or "developer log" heading above it (with or without hashes). The
+  dry run of a write proposes the note text; the user approves it by passing
+  it back, as written or edited, in `developer_note`. After the change is
+  saved, the entry is appended at the bottom of the block, before `*/`, in the
+  same form, with the user's name and "via Ariadne"; `;` or line breaks in the
+  note become bullets. The script sent back is verified to be the old script
+  plus those lines and nothing else; any other difference is refused. No block,
+  or several, is a refusal too: Ariadne does not invent one, and `block_line`
+  chooses when there are several.
+- **An audit log on disk.** One JSON line per write call: timestamp, user,
+  tool, app, dry run or real, actions, the note, the snapshot ids. Never the
+  key, never a script body. There is always a log: unset, it is a per-user
+  file on the developer's machine; set `ARIADNE_AUDIT_LOG` to a per-user file
+  in a shared folder the BI team owns (a synced SharePoint or OneDrive library
+  works) to make the record central. The log is opened for appending before a
+  real write is made, and the write is refused if that fails, so nothing
+  changes unlogged. `ARIADNE_AUDIT=off` is the only way around it, and it is a
+  deliberate setting a reviewer can see in the client configuration. A small
+  Qlik app that loads the folder is the usual way to show the record in the
+  tenant.
+
+`list_developer_notes` assembles the register from the scripts and the archive
+markers, so there is no central document to keep in sync.
+
 ## Beside the official Qlik MCP server
 
 Qlik's server (help pages dated 2026-10-15) is the right tool for analysis,
@@ -226,8 +270,8 @@ these parsers were ported from, and prints what the defect was.
 
 ## Status
 
-Version 0.2.1: metadata-only access by construction, read tools, and a
-guarded write path. `docs/DESIGN.md` holds
+Version 0.3.0: metadata-only access by construction, read tools, a guarded
+write path, and the developer note and audit log behind every change. `docs/DESIGN.md` holds
 the gap analysis against the official server, the write policy, the decisions
 taken, the ones still open, and the roadmap. `docs/ASSUMPTIONS.md` lists every
 platform behaviour Ariadne depends on and how to verify it on your tenant;
