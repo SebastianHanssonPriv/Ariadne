@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ariadne": {
+      "command": "ariadne",
+      "args": [],
+      "env": {
+        "QLIK_TENANT": "acme.eu.qlikcloud.com",
+        "QLIK_API_KEY_FILE": "${HOME}/.qlik/ariadne.key"
+      }
+    }
+  }
+}

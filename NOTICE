@@ -1,0 +1,20 @@
+Ariadne
+Copyright 2026 Sebastian Hansson
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The load-script parser (src/ariadne/qlik/script.py), the expression analysis
+and comparison key (src/ariadne/qlik/expressions.py), the ownership scan
+(src/ariadne/qlik/ownership.py), the bulk script read with its permission
+handling (src/ariadne/qlik/bulk.py) and the REST and Engine helpers are ported
+from the author's BI Governance Studio (the Eunomia repository), by the same
+author. They were rewritten for a library without a GUI; the rules they encode
+are unchanged and documented in CLAUDE.md.
+
+Third-party dependencies, each under its own license:
+- mcp (Model Context Protocol Python SDK), MIT
+- websocket-client, Apache 2.0
+and their transitive dependencies as installed by pip.
+
+Qlik, Qlik Cloud and Qlik Sense are trademarks of QlikTech International AB.
+This project is independent and not affiliated with or endorsed by Qlik.
