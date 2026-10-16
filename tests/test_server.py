@@ -344,10 +344,17 @@ check("ariadne_only keeps the stamped entries", all(e["via_ariadne"] for x in r[
 r = wcall("read_audit_log", limit=10)
 check("the audit log reads back", len(r["data"]["entries"]) == 2)
 nb = FakeBackend(allow_write=True, audit="")
-nsrv = build_server(backend=nb)
-res = asyncio.run(nsrv.call_tool("snapshot_app", {"app_id": "rep", "dry_run": False}))
+check("no path configured -> a per-user default path, never no log", nb.audit.path.endswith("audit.jsonl") and not nb.audit.explicit)
+bad = FakeBackend(allow_write=True, audit=os.path.join(os.devnull, "nope", "audit.jsonl"))
+bsrv = build_server(backend=bad)
+nwrites = len(bad.rest.writes)
+res = asyncio.run(bsrv.call_tool("snapshot_app", {"app_id": "rep", "dry_run": False}))
 r = json.loads("".join(c.text for c in res.content if getattr(c, "type", "") == "text"))
-check("a real write without an audit log configured is refused", r["access"]["state"] == "refused" and "audit" in r["access"]["rule"].lower())
+check("an audit log that cannot be appended to refuses the write before anything is sent",
+      r["access"]["state"] == "refused" and "audit" in r["access"]["rule"].lower() and len(bad.rest.writes) == nwrites)
+off = FakeBackend(allow_write=True, audit="")
+off.audit.mode = "off"; off.audit.path = ""
+check("ARIADNE_AUDIT=off is the only way to run without a log, and it is explicit", not off.audit.enabled)
 n = len(wb.rest.writes)
 r = wcall("apply_master_items", app_id="rep", measures=[{"name": "Net Sales", "expression": "Sum(Amount)"}],
           developer_note="second pass", dry_run=False)

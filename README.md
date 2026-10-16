@@ -91,7 +91,7 @@ ariadne analyze some_script.qvs   # load-script facts, no tenant needed
 | `ARIADNE_ARCHIVE_SPACE_ID` | default archive space for snapshots and `archive_app` | none (content writes refused) |
 | `ARIADNE_ARCHIVE_MAP` | `pattern=space_id;pattern=space_id`: a space id, or a glob on the space name, routes to that archive space | none |
 | `ARIADNE_SNAPSHOT_WITH_DATA` | app ids or name globs whose snapshots keep their data (apps that hold user-entered data) | none |
-| `ARIADNE_AUDIT_LOG` | path of the append-only JSONL audit log; a real write is refused without it | none |
+| `ARIADNE_AUDIT_LOG` | path of the append-only JSONL audit log; a real write is refused when it cannot be appended to | a per-user file on this machine |
 | `ARIADNE_AUDIT` | `writes` (default), `all` (dry runs too) or `off` | writes |
 
 Example for a tenant with two archive spaces:
@@ -213,11 +213,17 @@ Every change through Ariadne leaves two records.
   plus those lines and nothing else; any other difference is refused. No block,
   or several, is a refusal too: Ariadne does not invent one, and `block_line`
   chooses when there are several.
-- **An audit log on disk.** One JSON line per write call in
-  `ARIADNE_AUDIT_LOG`: timestamp, user, tool, app, dry run or real, actions,
-  the note, the snapshot ids. Never the key, never a script body. A real write
-  is refused when no log is configured. Put the file where reviewers can read
-  it; a small Qlik app that loads it is the usual way to show it in the tenant.
+- **An audit log on disk.** One JSON line per write call: timestamp, user,
+  tool, app, dry run or real, actions, the note, the snapshot ids. Never the
+  key, never a script body. There is always a log: unset, it is a per-user
+  file on the developer's machine; set `ARIADNE_AUDIT_LOG` to a per-user file
+  in a shared folder the BI team owns (a synced SharePoint or OneDrive library
+  works) to make the record central. The log is opened for appending before a
+  real write is made, and the write is refused if that fails, so nothing
+  changes unlogged. `ARIADNE_AUDIT=off` is the only way around it, and it is a
+  deliberate setting a reviewer can see in the client configuration. A small
+  Qlik app that loads the folder is the usual way to show the record in the
+  tenant.
 
 `list_developer_notes` assembles the register from the scripts and the archive
 markers, so there is no central document to keep in sync.

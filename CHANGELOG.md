@@ -10,8 +10,9 @@ The developer note and the audit log.
   (with or without hashes), newest first, stamped with date, user and
   "via Ariadne". `SetScript` is sent only through `set_script_inserted`, which
   verifies the new script is the old one plus the inserted lines.
-- `ARIADNE_AUDIT_LOG`: append-only JSONL of every write call; a real write is
-  refused without it. `read_audit_log` reads it back.
+- `ARIADNE_AUDIT_LOG`: append-only JSONL of every write call, defaulting to a
+  per-user file on the machine; the log is opened for appending before a real
+  write and the write is refused if that fails. `read_audit_log` reads it back.
 - `list_developer_notes`: the register across readable scripts plus the
   snapshot markers in the archive spaces. The central tenant document was
   decided against as redundant.

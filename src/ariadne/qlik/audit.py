@@ -1,7 +1,14 @@
 """Append-only audit log of what Ariadne changed: one JSON line per write
-tool call, in a file you configure. Never the key, never a script body.
-A real write (dry_run=false) requires the log to be configured; a dry run
-does not."""
+tool call. Never the key, never a script body.
+
+There is always a log. When ARIADNE_AUDIT_LOG is unset, the default is a
+per-user file (%LOCALAPPDATA%\\Ariadne\\audit.jsonl on Windows,
+~/.ariadne/audit.jsonl elsewhere), so a client configuration that forgets
+the line still leaves a record on that machine. Point it at a per-user file
+in a shared folder the BI team owns to make the record central. A real
+write is refused when the log cannot be opened for appending (checked
+before the write, so nothing changes unlogged); ARIADNE_AUDIT=off is the
+only way to run without one, and that is a deliberate setting."""
 from __future__ import annotations
 
 import datetime
@@ -12,14 +19,36 @@ import threading
 _lock = threading.Lock()
 
 
+def default_path() -> str:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return os.path.join(base, "Ariadne", "audit.jsonl")
+    return os.path.join(os.path.expanduser("~"), ".ariadne", "audit.jsonl")
+
+
 class AuditLog:
     def __init__(self, path: str, mode: str = "writes"):
-        self.path = (path or "").strip()
         self.mode = mode if mode in ("writes", "all", "off") else "writes"
+        self.path = (path or "").strip() or (default_path() if self.mode != "off" else "")
+        self.explicit = bool((path or "").strip())
 
     @property
     def enabled(self) -> bool:
         return bool(self.path) and self.mode != "off"
+
+    def check_writable(self) -> str:
+        """"" when an entry can be appended now, else the reason. Called
+        before a real write so a write never happens without its record."""
+        if not self.enabled:
+            return "" if self.mode == "off" else "no audit log path"
+        try:
+            d = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(d, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8"):
+                pass
+            return ""
+        except OSError as e:
+            return f"audit log {self.path} cannot be opened for appending: {e}"
 
     def record(self, *, tool: str, user: dict, app_id: str, dry_run: bool, summary: dict,
                note: str = "", snapshot_ids=()) -> dict | None:

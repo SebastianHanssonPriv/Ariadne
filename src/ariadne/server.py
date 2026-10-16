@@ -962,10 +962,14 @@ def build_server(backend: Backend | None = None, settings_env: dict | None = Non
 
     # ======================================================== NOTES, AUDIT
     def _audit_gate(b, dry_run):
-        if not dry_run and not b.audit.enabled:
-            return refused("write", "A real write requires the audit log (ARIADNE_AUDIT_LOG) to be configured.",
-                           "Set ARIADNE_AUDIT_LOG to an append-only file in a folder reviewers can read, "
-                           "or run with dry_run=true.")
+        if dry_run or b.audit.mode == "off":
+            return None
+        problem = b.audit.check_writable()
+        if problem:
+            return refused("write", "A real write requires an audit log that can be appended to before "
+                           "the change is made.", "Set ARIADNE_AUDIT_LOG to a per-user file in a folder "
+                           "reviewers can read (the default is a per-user file on this machine), or run "
+                           "with dry_run=true.", scrub(problem, key()))
         return None
 
     def _write_note(b, app_id, note, tool, block_line, dry_run):
