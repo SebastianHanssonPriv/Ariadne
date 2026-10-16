@@ -65,6 +65,41 @@ class FakeRest:
         for a in self.apps_list:
             if a["guid"] == app_id:
                 a["description"] = d
+    # gateway
+    def search_items(self, query="", resource_types=(), space_id="", limit=50):
+        rows = [{"name": a["name"], "id": a["guid"], "type": "app", "space_id": a["space_id"], "owner_id": a["owner_id"],
+                 "updated": "", "description": ""} for a in self.apps_list if query.lower() in a["name"].lower()]
+        rows.append({"name": "Orders dataset", "id": "ds1", "type": "dataset", "space_id": "s1", "owner_id": "u2", "updated": "", "description": ""})
+        if resource_types:
+            rows = [r for r in rows if r["type"] in resource_types]
+        return rows[:limit]
+    def dataset(self, dataset_id):
+        return {"id": dataset_id, "name": "Orders dataset", "space_id": "s1", "owner_id": "u2", "technical_name": "orders.qvd",
+                "qri": "qri:qdf:x", "description": "", "last_updated": "2026-10-01T00:00:00Z", "created": "", "operational": {},
+                "fields": [{"name": "OrderNo", "type": "STRING", "primary_key": True, "nullable": False}], "field_count": 1, "unknowns": []}
+    def glossaries(self): return [{"id": "g1", "name": "Sales", "description": "", "space_id": "s1", "owner_id": "u2", "status": "active"}]
+    terms = [{"id": "t1", "name": "Net Sales", "description": "Sales after rebates", "abbreviation": "", "status": "verified",
+              "categories": [], "tags": [], "steward_id": "u2", "modified": ""}]
+    def glossary_terms(self, gid, query="", limit=100):
+        return [t for t in self.terms if query.lower() in t["name"].lower()]
+    def glossary_term(self, gid, tid): return next(t for t in self.terms if t["id"] == tid)
+    def create_glossary_term(self, gid, body):
+        self.writes.append(("term-create", body["name"])); t = {**self.terms[0], **body, "id": "t2"}; self.terms.append(t); return t
+    def update_glossary_term(self, gid, tid, body):
+        self.writes.append(("term-update", tid, sorted(body))); t = self.glossary_term(gid, tid); t.update(body); return t
+    def reloads(self, app_id, limit=20): return [{"id": "r1", "app_id": app_id, "status": "SUCCEEDED", "type": "manual", "partial": False,
+                                                 "user_id": "u1", "created": "", "started": "", "ended": "", "engine_time": "", "log_excerpt": ""}]
+    def reload(self, rid): return {"id": rid, "app_id": "rep", "status": "QUEUED", "type": "manual", "partial": False, "user_id": "u1",
+                                   "created": "", "started": "", "ended": "", "engine_time": "", "log_excerpt": "Password=abc"}
+    def start_reload(self, app_id, partial=False):
+        self.writes.append(("reload", app_id, partial)); return {"id": "r2", "app_id": app_id, "status": "QUEUED"}
+    def cancel_reload(self, rid): self.writes.append(("cancel", rid)); return {"cancelled": True}
+    def reload_log(self, app_id, rid): return "Lines fetched: 10\nCONNECT TO 'x;Password=secret'\nTRACE done;"
+    def automations(self, limit=100): return [{"id": "a1", "name": "Notify", "description": "", "state": "available", "run_mode": "manual",
+                                               "owner_id": "u1", "space_id": "", "schedules": [], "last_run_status": "", "last_run_at": "", "updated": ""}]
+    def automation(self, aid): return self.automations()[0]
+    def automation_runs(self, aid, limit=20): return [{"id": "run1", "status": "finished", "context": "api", "started": "", "stopped": "", "error": ""}]
+    def start_automation(self, aid, inputs=None): self.writes.append(("automation", aid)); return {"id": "run2", "status": "queued", "started": ""}
     def me(self): return {"id": "u1", "name": "svc", "roles": ["TenantAdmin"], "status": "active"}
     def user_info(self, uid):
         return {"u1": {"name": "svc", "status": "active", "found": True},
@@ -145,6 +180,20 @@ class FakeEngine:
         if method == "GetProperties": return {"qProp": {"qInfo": {"qId": "x"}, "qMeasure": {}, "qMetaDef": {}}}
         return {"qReturn": {"qHandle": 0}}
     def do_save(self): FakeEngine.engine_calls.append((self.app_id, "DoSave"))
+    def sheet_list(self): return [{"id": "sh1", "title": "Main", "description": "", "published": None, "approved": None, "rank": 0, "objects": 1}]
+    def sheet_objects(self, sheet_id):
+        return {"sheet_id": sheet_id, "title": "Main", "objects": [{"id": "o1", "type": "kpi", "title": "Net", "subtitle": "",
+                "dimensions": [], "measures": [{"library_id": "m2", "expression": "", "label": ""}], "other_expressions": [], "children": 0}]}
+    def data_model(self): return {"tables": [{"name": "Orders", "rows": 10, "is_synthetic": False,
+                                              "fields": [{"name": "OrderNo", "is_key": False, "key_type": "NOT_KEY", "tags": ["$ascii"], "distinct_values": 10}]}],
+                                  "keys": []}
+    def create_sheet(self, title, description=""):
+        from ariadne.qlik.policy import check_engine
+        check_engine("CreateObject", True, [{"qInfo": {"qType": "sheet"}}]); FakeEngine.engine_calls.append((self.app_id, "CreateObject")); return "sh_new"
+    def add_chart(self, sheet_id, viz, title, dims, meas, col=0, row=0, colspan=12, rowspan=6):
+        from ariadne.qlik.policy import check_engine
+        check_engine("CreateChild", True, [{"qInfo": {"qType": viz}, "qHyperCubeDef": {"qInitialDataFetch": []}}])
+        FakeEngine.engine_calls.append((self.app_id, "CreateChild")); return "ch_new"
 
 
 import os, tempfile
@@ -186,19 +235,20 @@ def check(label, cond, detail=""):
     print(f"  {'ok  ' if cond else 'FAIL'} {label}" + (f"  -> {detail}" if detail and not cond else ""))
 
 
-def call(name, **args):
-    res = asyncio.run(srv.call_tool(name, args))
+def call(tool, **args):
+    res = asyncio.run(srv.call_tool(tool, args))
     text = "".join(c.text for c in res.content if getattr(c, "type", "") == "text")
-    check(f"[{name}] the key never appears in the result", KEY not in text and KEY[:24] not in text)
+    check(f"[{tool}] the key never appears in the result", KEY not in text and KEY[:24] not in text)
     return json.loads(text) if text.startswith("{") else text
 
 
 tools = asyncio.run(srv.list_tools())
 names = sorted(t.name for t in tools)
 print("surface:")
-check("20 tools registered", len(names) == 20, names)
+check("40 tools registered", len(names) == 40, names)
 check("the four write-path tools are annotated as not read-only, the rest read-only",
-      {t.name for t in tools if not t.annotations.read_only_hint} == {"snapshot_app", "archive_app", "apply_master_items", "add_developer_note"})
+      {t.name for t in tools if not t.annotations.read_only_hint} == {"snapshot_app", "archive_app", "apply_master_items", "add_developer_note",
+          "start_reload", "cancel_reload", "create_glossary_term", "update_glossary_term", "start_automation", "create_sheet", "add_chart"})
 check("every tool carries annotations", all(t.annotations for t in tools))
 check("every tool has a description", all((t.description or "").strip() for t in tools))
 
@@ -285,10 +335,10 @@ wb = FakeBackend(allow_write=True)
 wsrv = build_server(backend=wb)
 
 
-def wcall(name, **args):
-    res = asyncio.run(wsrv.call_tool(name, args))
+def wcall(tool, **args):
+    res = asyncio.run(wsrv.call_tool(tool, args))
     text = "".join(c.text for c in res.content if getattr(c, "type", "") == "text")
-    check(f"[{name}] the key never appears in the result", KEY not in text and KEY[:24] not in text)
+    check(f"[{tool}] the key never appears in the result", KEY not in text and KEY[:24] not in text)
     return json.loads(text)
 
 
@@ -373,6 +423,55 @@ check("archive_app moves to the default archive and verifies", r["data"]["moved"
 r = wcall("compare_app_versions", app_id="rep", other_app_id="ext")
 check("compare reports script and measure differences", r["data"]["script"]["changed"]
       and "UK" in r["data"]["measures"]["removed"])
+
+print("gateway reads:")
+r = call("search", query="sales", resource_types=["app"])
+check("search returns typed items with their space", [x["id"] for x in r["data"]["results"]] == ["rep", "rep_pub"] and r["data"]["results"][0]["space"] == "Finance")
+r = call("list_sheets", app_id="rep")
+check("sheets listed; unreported published state is an unknown", r["data"]["count"] == 1 and r["unknowns"])
+r = call("get_sheet_details", app_id="rep", sheet_id="sh1")
+check("sheet objects described by definition", r["data"]["objects"][0]["measures"][0]["library_id"] == "m2")
+r = call("get_data_model", app_id="rep")
+check("data model: tables, fields, keys", r["data"]["table_count"] == 1 and r["data"]["field_count"] == 1)
+r = call("get_dataset", dataset_id="ds1")
+check("dataset metadata and schema, no rows", r["data"]["field_count"] == 1 and "sample" not in json.dumps(r["data"]))
+r = call("search_glossary_terms", glossary_id="g1", query="net")
+check("glossary terms searched", r["data"]["count"] == 1)
+r = call("get_reload", reload_id="r1")
+check("reload log excerpt is masked", "secret" not in r["data"]["log_excerpt"] and "abc" not in r["data"]["log_excerpt"])
+r = call("get_reload_log", app_id="rep", reload_id="r1")
+check("full reload log is masked and paged", "secret" not in r["data"]["log"] and "Lines fetched" in r["data"]["log"])
+r = call("get_automation", automation_id="a1")
+check("automation with runs", r["data"]["runs"][0]["id"] == "run1")
+r = call("start_reload", app_id="rep", dry_run=False)
+check("gateway writes refused when writes are disabled", r["access"]["state"] == "refused")
+
+print("gateway writes:")
+n = len(wb.rest.writes)
+r = wcall("start_reload", app_id="rep")
+check("start_reload dry run starts nothing", r["data"]["dry_run"] and len(wb.rest.writes) == n)
+r = wcall("start_reload", app_id="rep", dry_run=False)
+check("start_reload real run starts and is logged", r["data"]["reload"]["id"] == "r2" and ("reload", "rep", False) in wb.rest.writes
+      and any(_json.loads(l)["tool"] == "start_reload" for l in open(AUDIT, encoding="utf-8")))
+r = wcall("create_glossary_term", glossary_id="g1", name="net sales", description="x", dry_run=False)
+check("a near-duplicate term name is refused", r["access"]["state"] == "refused")
+r = wcall("create_glossary_term", glossary_id="g1", name="Gross Margin", description="Sales minus cost", dry_run=False)
+check("a new term is created as draft and logged", r["data"]["term"]["id"] == "t2" and r["data"]["term"]["status"] == "draft")
+r = wcall("update_glossary_term", glossary_id="g1", term_id="t1", status="deprecated", dry_run=False)
+check("a term is deprecated, never deleted", r["data"]["after"]["status"] == "deprecated" and ("term-update", "t1", ["status"]) in wb.rest.writes)
+r = wcall("create_sheet", app_id="rep", title="Overview", dry_run=False)
+check("create_sheet real run without a note is refused", r["access"]["state"] == "refused")
+r = wcall("create_sheet", app_id="rep", title="Overview")
+prop = r["data"]["developer_note"]["proposed"]
+check("create_sheet dry run proposes a note", "created sheet 'Overview'" in prop and r["data"]["sheet_id"] == "")
+r = wcall("create_sheet", app_id="rep", title="Overview", developer_note=prop, dry_run=False)
+check("create_sheet creates, saves, notes and logs", r["data"]["sheet_id"] == "sh_new" and r["data"]["developer_note"]["record"]["written"]
+      and ("rep", "CreateObject") in FakeEngine.engine_calls and "created sheet" in SCRIPTS["rep"])
+r = wcall("add_chart", app_id="rep", sheet_id="sh_new", viz_type="barchart", title="Sales by region",
+          dimensions=[{"field": "Region"}], measures=[{"expression": "Sum(Amount)"}], developer_note="added chart", dry_run=False)
+check("add_chart creates the child and notes it", r["data"]["chart_id"] == "ch_new" and ("rep", "CreateChild") in FakeEngine.engine_calls)
+r = wcall("add_chart", app_id="rep", sheet_id="sh_new", viz_type="hypercube-dump", title="x", developer_note="n", dry_run=False)
+check("an unknown viz type is refused", r["access"]["state"] == "refused")
 
 print("prompt and resource:")
 prompts = asyncio.run(srv.list_prompts())

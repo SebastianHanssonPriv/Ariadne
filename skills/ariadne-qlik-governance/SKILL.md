@@ -17,7 +17,7 @@ metadata:
     - mcp
     - governance
     - lineage
-allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership compare_app_versions snapshot_app archive_app apply_master_items add_developer_note list_developer_notes read_audit_log
+allowed-tools: tenant_overview list_apps describe_app diagnose_app_access get_load_script analyze_load_script get_lineage_graph trace_qvd list_extractors get_master_items compare_master_items find_unused_in_app check_ownership compare_app_versions snapshot_app archive_app apply_master_items add_developer_note list_developer_notes read_audit_log search list_sheets get_sheet_details get_data_model get_dataset list_glossaries search_glossary_terms get_glossary_term list_reloads get_reload get_reload_log list_automations get_automation start_reload cancel_reload create_glossary_term update_glossary_term start_automation create_sheet add_chart
 ---
 
 # Ariadne Qlik governance

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 - 2026-10-16
+
+The single Qlik gateway, metadata only.
+
+- Reads: `search`, `list_sheets`, `get_sheet_details`, `get_data_model`,
+  `get_dataset`, `list_glossaries`, `search_glossary_terms`,
+  `get_glossary_term`, `list_reloads`, `get_reload`, `get_reload_log`,
+  `list_automations`, `get_automation`.
+- Writes behind the gate, dry run by default, audit-logged: `start_reload`,
+  `cancel_reload`, `create_glossary_term`, `update_glossary_term`,
+  `start_automation`, `create_sheet`, `add_chart`. Sheet and chart creation
+  snapshot a published app first and need an approved developer note.
+- Policy: REST allowlist gains data-sets, glossaries, reloads and automations,
+  with a denylist for profile, sample, preview, values and other data
+  sub-resources; Engine allowlist gains `CreateObject` and `CreateChild`, and
+  any object definition carrying an initial data fetch is refused, so a
+  created chart can never be read back as rows.
+- Reload logs are masked like scripts.
+
 ## 0.3.0 - 2026-10-16
 
 The developer note and the audit log.

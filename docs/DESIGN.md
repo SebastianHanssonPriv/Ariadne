@@ -238,11 +238,10 @@ are out of scope by design, not by omission.
   progress reporting for long scans; `trace_qvd` across several names at once.
 - **0.3** Streamable HTTP with per-user identity (Qlik OAuth client, M2M);
   audit log of tool calls (who asked what, never the key).
-- **0.4 (gateway, metadata)** Ariadne as the single Qlik gateway: sheets and
-  chart metadata, data model as its own tool, dataset metadata and schema,
-  glossary read and write (no delete), reload start, status and log,
-  automations list and start, sheet and chart creation. Each step adds its
-  REST paths and Engine methods to the allowlist with a test.
+- **0.4 (gateway, metadata)** Built: sheets and chart metadata, the data
+  model, dataset metadata and schema, glossary read and write (no delete),
+  reloads, automations, sheet and chart creation. Assumptions A14 to A19
+  carry it and are unverified until run against the tenant.
 - **0.5 (writes)** `restore_snapshot` (republish or copy back, dry run first);
   snapshot retention listing; a probe tool that verifies A3 to A7 on one app;
   on-disk export of the .qvf as an optional second line of defence; a
