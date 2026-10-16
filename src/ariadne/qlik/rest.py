@@ -91,7 +91,7 @@ class Rest:
         return path if path.startswith("http") else f"https://{self.host}{path}"
 
     def _raw(self, method: str, path: str, body=None, content_type: str = "", timeout: int = 30):
-        check_http(method, self.allow_write)
+        check_http(method, self.allow_write, path)
         return request(self._url(path), self.api_key, method=method, body=body,
                        content_type=content_type, timeout=timeout)
 

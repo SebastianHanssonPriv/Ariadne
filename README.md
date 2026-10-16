@@ -134,6 +134,33 @@ One process serves one tenant with one key. There is no per-user identity on
 this transport yet; put it behind your own authentication or keep it on stdio.
 See `docs/DESIGN.md` for the planned OAuth path.
 
+## Metadata only, by construction
+
+Ariadne reads no data rows, in any mode, and there is no setting that makes it
+do so. The guarantee is in `ariadne.qlik.policy`, under every call:
+
+- The Engine allowlist holds no data-fetching method. `GetHyperCubeData`,
+  `GetListObjectData`, `GetFieldValues`, `ExportData`, `SearchValues` and every
+  other method that returns values are refused before a socket is touched.
+- A session object may only be one of five metadata listings (measures,
+  dimensions, variables, fields, sheets), so `GetLayout` can never carry data
+  pages.
+- REST calls are limited to an allowlist of paths (items, apps, spaces, users,
+  lineage graphs, temp contents). No dataset, data file or sample endpoint
+  is reachable.
+- A load script's `INLINE` rows are withheld at the engine layer; the header
+  line and a row count remain. A script-created variable's value is withheld;
+  its name remains.
+- The snapshot export is a `.qvf` without data that passes from the tenant
+  through the local process back into the tenant. It never enters a tool
+  result. For apps on the with-data exception list, the same holds.
+
+What still reaches the model is what a developer typed: expressions, variable
+definitions, load scripts without their inline rows, file and table names,
+descriptions, titles, row counts. A literal inside an expression
+(`if(Country='Sweden', ...)`) is business logic, not a record, but it is text
+your developers wrote and the reviewer of the policy should know it travels.
+
 ## Writes, and what is never done
 
 Writes are off unless `ARIADNE_ALLOW_WRITE=1`, and the key's own rights decide
@@ -199,7 +226,8 @@ these parsers were ported from, and prints what the defect was.
 
 ## Status
 
-Version 0.2.0: read tools plus a guarded write path. `docs/DESIGN.md` holds
+Version 0.2.1: metadata-only access by construction, read tools, and a
+guarded write path. `docs/DESIGN.md` holds
 the gap analysis against the official server, the write policy, the decisions
 taken, the ones still open, and the roadmap. `docs/ASSUMPTIONS.md` lists every
 platform behaviour Ariadne depends on and how to verify it on your tenant;

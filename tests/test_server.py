@@ -19,6 +19,7 @@ SCRIPTS = {
     "dyn": "LET vT = Upper('orders');\nT:\nLOAD * FROM [lib://QVD/$(vT).qvd](qvd);",
 }
 SCRIPTS["rep_pub"] = SCRIPTS["rep"]
+SCRIPTS["ext"] += "\nMap:\nMapping LOAD * INLINE [\nCode, Customer\nA, Acme AB\n];"
 ARCH, ARCH_FIN = "6238963d4769f1ced8bf9931", "67d04f9b700c02cbea1f67e8"
 APPS = [
     {"name": "ABC Inventory QVD creator", "guid": "ext", "space_id": "s1", "owner_id": "u1",
@@ -92,9 +93,10 @@ class FakeEngine:
     def __exit__(self, *e): pass
     def layout(self): return {"qTitle": self.app_id}
     def get_script(self):
+        from ariadne.qlik.script import redact_inline
         if self.app_id == "locked":
             raise EngineRefused(f"Access denied (code 403) key={KEY}")
-        return SCRIPTS[self.app_id]
+        return redact_inline(SCRIPTS[self.app_id])
     def measures(self):
         if self.app_id == "locked":
             raise EngineRefused(f"Access denied (code 403) key={KEY}")
@@ -105,7 +107,9 @@ class FakeEngine:
                         {"id": "m5", "name": "Dyn", "expression": "$(vExpr)", "label_expression": ""}]}.get(self.app_id, [])
     def dimensions(self): return []
     def variables(self): return [{"id": "v", "name": "vExpr", "definition": "Sum(Hidden)", "is_reserved": False,
-                                  "is_script_created": False}]
+                                  "is_script_created": False},
+                                 {"id": "v2", "name": "vMaxDate", "definition": "<withheld: script-created value>",
+                                  "value_withheld": True, "is_reserved": False, "is_script_created": True}]
     def model_fields(self): return [{"name": "Amount", "src_tables": ["Orders"], "is_system": False, "is_hidden": False, "is_key": False},
                                     {"name": "Unused", "src_tables": ["Orders"], "is_system": False, "is_hidden": False, "is_key": False},
                                     {"name": "Hidden", "src_tables": ["Orders"], "is_system": False, "is_hidden": False, "is_key": False}]
@@ -120,7 +124,7 @@ class FakeEngine:
     def open(self): return 1
     def call(self, h, method, params):
         from ariadne.qlik.policy import check_engine
-        check_engine(method, True)
+        check_engine(method, True, params)
         FakeEngine.engine_calls.append((self.app_id, method))
         if method == "CreateSessionObject": return {"qReturn": {"qHandle": 99}}
         if method == "GetLayout": return {"qLayout": {"qMeasureList": {"qItems": [
@@ -209,6 +213,12 @@ print("thread:")
 r = call("get_load_script", app_id="locked")
 check("refused script -> data None, access.state refused, rule present", r["data"] is None
       and r["access"]["state"] == "refused" and "owner" in r["access"]["rule"].lower())
+r = call("get_load_script", app_id="ext")
+check("inline rows never reach a result; the header does", "Acme" not in r["data"]["script"]
+      and "Code, Customer" in r["data"]["script"])
+r = call("get_master_items", app_id="rep")
+check("a script-created variable's value is withheld, its name kept",
+      any(v["name"] == "vMaxDate" and v.get("value_withheld") and "Acme" not in v["definition"] for v in r["data"]["variables"]))
 r = call("get_load_script", app_id="ext", max_chars=20)
 check("paging: truncated with next_offset", r["data"]["truncated"] and r["data"]["next_offset"] == 20)
 r = call("analyze_load_script", script_text=SCRIPTS["ext"])

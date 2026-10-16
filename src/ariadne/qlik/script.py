@@ -436,6 +436,31 @@ _SECRET = re.compile(r"(?i)\b(password|pwd|secret|token|api[_-]?key|client[_-]?s
 _INCLUDE = re.compile(r"(?i)\$\((?:must_)?include\s*=\s*([^)]*)\)")
 
 
+WITHHELD = "<inline rows withheld: {n} line(s); metadata only>"
+
+
+def redact_inline(script: str) -> str:
+    """Withhold the rows of every INLINE table. The header line (field names)
+    is kept, because it is metadata the parsers need; everything after it is
+    replaced by a count. Works on bracketed and quoted INLINE bodies, inside
+    and outside comments, so no path round the parsers exposes a row."""
+    if not script or "inline" not in script.lower():
+        return script or ""
+
+    def repl(m):
+        body = m.group(2)
+        lines = body.strip("\r\n").split("\n")
+        header = lines[0].strip() if lines else ""
+        rows = len(lines) - 1 if len(lines) > 1 else 0
+        if rows <= 0:
+            return m.group(0)
+        return f"{m.group(1)}{header}\n{WITHHELD.format(n=rows)}\n{m.group(3)}"
+
+    out = re.sub(r"(?is)(\bINLINE\s*\[)(.*?)(\])", repl, script)
+    out = re.sub(r'(?is)(\bINLINE\s*")(.*?)(")', repl, out)
+    return out
+
+
 def redact_secrets(script: str) -> str:
     """Mask credential-looking values in CONNECT strings before a script
     leaves the process. Old-style CONNECT TO strings can carry a password in

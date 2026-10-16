@@ -19,7 +19,7 @@ class Fake:
         self.titles, self.calls = titles, []
     def open(self): return 1
     def call(self, h, method, params):
-        check_engine(method, True)
+        check_engine(method, True, params)
         self.calls.append((method, params))
         if method == "CreateSessionObject": return {"qReturn": {"qHandle": 99}}
         if method == "GetLayout": return {"qLayout": {"qMeasureList": {"qItems": [

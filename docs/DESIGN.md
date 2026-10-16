@@ -91,6 +91,10 @@ scripts, and free of connection strings).
 
 **Security boundaries.**
 
+- Metadata only, by construction: no Engine method that returns values is on
+  the allowlist, a session object may only be a metadata listing, REST calls
+  are limited to listed paths, INLINE rows and script-created variable
+  values are withheld at the engine layer. There is no data mode.
 - One API key, read from the environment, stripped on entry, scrubbed from
   every error and detail before it enters a result. Never logged.
 - Read-only: every tool is annotated `read_only_hint`, and the Engine

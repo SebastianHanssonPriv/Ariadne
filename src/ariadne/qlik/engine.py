@@ -15,6 +15,7 @@ import websocket
 
 from ..config import normalize_host
 from .policy import check_engine
+from .script import redact_inline
 
 _PERMANENT = ("access denied", "forbidden", "unauthorized", "not authorized",
               "app not found", "resource not found")
@@ -59,7 +60,7 @@ class EngineSession:
         return self
 
     def call(self, handle, method, params):
-        check_engine(method, self.allow_write)
+        check_engine(method, self.allow_write, params)
         self.id += 1
         self.ws.send(json.dumps({"jsonrpc": "2.0", "id": self.id, "handle": handle,
                                  "method": method, "params": params}))
@@ -99,7 +100,9 @@ class EngineSession:
         return self.call(self.open(), "GetAppLayout", [])["qLayout"]
 
     def get_script(self) -> str:
-        return self.call(self.open(), "GetScript", [])["qScript"]
+        """The load script with INLINE table rows withheld: rows typed into a
+        script are data, and nothing downstream of this method sees them."""
+        return redact_inline(self.call(self.open(), "GetScript", [])["qScript"] or "")
 
     def _list(self, qtype: str, list_key: str, def_key: str, extra: dict | None = None):
         d = {"qInfo": {"qType": list_key}, def_key: {"qType": qtype}}
@@ -153,10 +156,15 @@ class EngineSession:
         rows = []
         for it in self._list("variable", "qVariableList", "qVariableListDef",
                              {"qShowReserved": True, "qShowConfig": True, "qData": {"tags": "/tags"}}):
+            script_made = bool(it.get("qIsScriptCreated", False))
+            # A script-created variable holds a value computed from data
+            # (LET vMax = Peek(...)); the value is withheld, the name kept.
             rows.append({"id": it.get("qInfo", {}).get("qId", ""), "name": it.get("qName", ""),
-                         "definition": it.get("qDefinition", ""),
+                         "definition": ("<withheld: script-created value>" if script_made
+                                        else it.get("qDefinition", "")),
+                         "value_withheld": script_made,
                          "description": it.get("qDescription", ""),
-                         "is_script_created": bool(it.get("qIsScriptCreated", False)),
+                         "is_script_created": script_made,
                          "is_reserved": bool(it.get("qIsReserved", False)),
                          "tags": list((it.get("qData", {}) or {}).get("tags", []) or [])})
         return rows

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 - 2026-10-16
+
+Metadata only, by construction.
+
+- Engine allowlist holds no data-fetching method; `CreateSessionObject` is
+  limited to the five metadata listings and refused when a definition carries
+  a hypercube or list object.
+- REST calls limited to an allowlist of paths.
+- INLINE table rows withheld at the engine layer (header and row count kept);
+  script-created variable values withheld (name kept).
+- Tests pin every refused method, the session-object check, the path
+  allowlist and the withholding.
+
 ## 0.2.0 - 2026-10-16
 
 A guarded write path, and an assumptions register.

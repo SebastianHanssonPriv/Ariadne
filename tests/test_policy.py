@@ -44,6 +44,25 @@ check("CreateMeasure refused without the flag", refused(P.check_engine, "CreateM
 check("CreateMeasure allowed with the flag", not refused(P.check_engine, "CreateMeasure", True))
 e = EngineSession("t.eu.qlikcloud.com", "k", "app", allow_write=True)
 check("EngineSession.call refuses DestroyMeasure before touching the socket", refused(e.call, 1, "DestroyMeasure", ["x"]))
+print("metadata only, by construction:")
+for m in ("GetHyperCubeData", "GetListObjectData", "GetFieldValues", "GetHyperCubeStackData", "ExportData",
+          "GetTableData", "SearchValues", "GetAssociativeInsights", "SelectValues", "GetHyperCubeContinuousData"):
+    check(f"{m} is never sent", refused(P.check_engine, m, True))
+check("a metadata list session object is allowed",
+      not refused(P.check_engine, "CreateSessionObject", False, [{"qInfo": {"qType": "qFieldList"}, "qFieldListDef": {}}]))
+check("a hypercube session object is refused",
+      refused(P.check_engine, "CreateSessionObject", False,
+              [{"qInfo": {"qType": "x"}, "qHyperCubeDef": {"qDimensions": [], "qMeasures": []}}]))
+check("a metadata list that smuggles a list object is refused",
+      refused(P.check_engine, "CreateSessionObject", False,
+              [{"qInfo": {"qType": "qFieldList"}, "qFieldListDef": {}, "qListObjectDef": {"qDef": {"qFieldDefs": ["Customer"]}}}]))
+check("CreateSessionObject without a definition is refused", refused(P.check_engine, "CreateSessionObject", False, []))
+check("an allowed REST path passes", not refused(P.check_path, "/api/v1/apps/x/scripts"))
+check("an absolute temp-contents URL passes", not refused(P.check_path, "https://t.eu.qlikcloud.com/api/v1/temp-contents/abc?inline=1"))
+for path in ("/api/v1/data-files/x", "/api/v1/datasets/x/data", "/api/v1/qix-datafiles/x", "/api/v1/apps-data", "/api/v1/reloads"):
+    check(f"{path} is refused", refused(P.check_path, path))
+check("Rest.get refuses a path outside the allowlist before any network call",
+      refused(r0.get, "/api/v1/data-files/abc"))
 print()
 print(f"{sum(ok)} of {len(ok)} pass")
 sys.exit(0 if all(ok) else 1)

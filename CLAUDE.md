@@ -96,7 +96,17 @@ assumptions. Every platform behaviour Ariadne depends on is listed in
 `docs/ASSUMPTIONS.md` with how to verify it. When you port a rule, add its
 assumption there; when a tenant contradicts one, fix the code and the entry.
 
-## 11. Style
+## 11. No data, ever
+
+`qlik/policy.py` holds no Engine method that returns values, allows only
+metadata list session objects, and limits REST to listed paths. INLINE rows
+are withheld in `EngineSession.get_script`, script-created variable values in
+`EngineSession.variables`. A new Engine method or REST path goes on the
+allowlist only with a test in `test_policy.py` and a line in the README's
+"Metadata only" section saying what it returns. There is no data mode and
+none is to be added without a decision recorded in `docs/DESIGN.md`.
+
+## 13. Style
 
 No em dash anywhere in code, docs or output: a hyphen or a new sentence.
 Preserve exact object names (tools, fields, APIs).

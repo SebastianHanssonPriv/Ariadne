@@ -115,6 +115,20 @@ conns = S.connections_named("LIB CONNECT TO 'ERP_Prod';\nLOAD * FROM [lib://QVD_
 ok.append(conns == ["ERP_Prod", "QVD_Layer"])
 print(f"  {'ok  ' if ok[-1] else 'FAIL'} connections named, comments excluded: {conns}")
 
+print("inline rows are data and never leave the engine layer:")
+inline = ("Map:\nMapping LOAD * INLINE [\nCode, Customer\nA, Acme AB\nB, Beta Oy\n];\n"
+          "T:\nLOAD Code, Qty INLINE \"\nCode, Qty\n1, 2\n\";\n// LOAD * INLINE [\nX\nsecret row\n];\n"
+          "U:\nLOAD * FROM [lib://Q/a.qvd](qvd);")
+red = S.redact_inline(inline)
+ok.append("Acme" not in red and "Beta" not in red and "secret row" not in red and "1, 2" not in red)
+print(f"  {'ok  ' if ok[-1] else 'FAIL'} every inline row is withheld, in comments too")
+ok.append("Code, Customer" in red and "Code, Qty" in red and "withheld: 2 line(s)" in red)
+print(f"  {'ok  ' if ok[-1] else 'FAIL'} the header line and the row count are kept")
+got = [(t["label"], t["kind"]) for t in S.parse_load_tables(red)]
+ok.append(got == [("Map", "inline"), ("T", "inline"), ("U", "from")])
+print(f"  {'ok  ' if ok[-1] else 'FAIL'} the parser still sees the inline tables: {got}")
+ok.append(S.redact_inline("LOAD * FROM [lib://Q/a.qvd](qvd);") == "LOAD * FROM [lib://Q/a.qvd](qvd);")
+print(f"  {'ok  ' if ok[-1] else 'FAIL'} a script without INLINE is untouched")
 print()
 print(f"{sum(ok)} of {len(ok)} pass")
 sys.exit(0 if all(ok) else 1)
