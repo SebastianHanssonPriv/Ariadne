@@ -212,14 +212,40 @@ Assumptions A3 to A7 in `docs/ASSUMPTIONS.md` carry this section; verify them
 on one test app with `snapshot_app` and `dry_run=false` before enabling writes
 for developers.
 
-## 10. Roadmap
+## 10. Deferred: a data profile for an IT-operated deployment
+
+Decided 2026-10-16: Ariadne stays metadata only, on every transport, while
+it is used through Claude and while it is in development. A data profile
+(field values, chart data, hypercube calculations, dataset samples) was
+considered for a Microsoft Copilot path, where IT has approved the harness
+for internal data, and deferred. If it is taken up, the conditions are:
+
+- Available only on the streamable HTTP transport, refused on stdio by code,
+  so no client configuration on a developer's machine can enable it.
+- The endpoint is hosted and operated by IT and authenticated (Entra ID).
+- Each call runs as the calling user through Qlik's OAuth machine-to-machine
+  impersonation, so Section Access and space roles apply to the data
+  returned. One service key for all users is not acceptable for data.
+- Every data call is audit-logged with user, app and expression.
+- Selections stay out; set analysis in the expression replaces them.
+
+Until then, the single gateway is metadata only, and analytical questions
+are out of scope by design, not by omission.
+
+## 11. Roadmap
 
 - **0.2** QVD field-level impact; orphan QVDs from the data-files inventory;
   progress reporting for long scans; `trace_qvd` across several names at once.
 - **0.3** Streamable HTTP with per-user identity (Qlik OAuth client, M2M);
   audit log of tool calls (who asked what, never the key).
-- **0.3 (writes)** `restore_snapshot` (republish or copy back, dry run first);
+- **0.4 (gateway, metadata)** Ariadne as the single Qlik gateway: sheets and
+  chart metadata, data model as its own tool, dataset metadata and schema,
+  glossary read and write (no delete), reload start, status and log,
+  automations list and start, sheet and chart creation. Each step adds its
+  REST paths and Engine methods to the allowlist with a test.
+- **0.5 (writes)** `restore_snapshot` (republish or copy back, dry run first);
   snapshot retention listing; a probe tool that verifies A3 to A7 on one app;
-  on-disk export of the .qvf as an optional second line of defence.
+  on-disk export of the .qvf as an optional second line of defence; a
+  decision on full script replacement under the snapshot and note rules.
 - **Later** Power BI counterpart (the source application has the analysis),
   a Qlik Automation that calls Ariadne on a schedule and files the worklist.
