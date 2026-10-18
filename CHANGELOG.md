@@ -4,6 +4,9 @@
 
 The single Qlik gateway, metadata only.
 
+- The Engine WebSocket honours `HTTPS_PROXY` and `NO_PROXY` like REST does;
+  `ariadne check --app <id>` tests the Engine path and the script right on one app.
+
 - Reads: `search`, `list_sheets`, `get_sheet_details`, `get_data_model`,
   `get_dataset`, `list_glossaries`, `search_glossary_terms`,
   `get_glossary_term`, `list_reloads`, `get_reload`, `get_reload_log`,

@@ -83,6 +83,21 @@ check("CreateChild with an initial data fetch is refused",
 check("SetProperties that smuggles a data fetch is refused",
       refused(P.check_engine, "SetProperties", True, [{"qInfo": {"qType": "barchart"}, "qHyperCubeDef": {"qInitialDataFetch": [{"qHeight": 1}]}}]))
 check("CreateObject without the flag is refused", refused(P.check_engine, "CreateObject", False, [{"qInfo": {"qType": "sheet"}}]))
+print("proxy for the Engine:")
+import os
+from ariadne.qlik.engine import proxy_settings
+saved = {k: os.environ.pop(k, None) for k in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy")}
+check("no proxy variables -> direct", proxy_settings("t.eu.qlikcloud.com") == {})
+os.environ["HTTPS_PROXY"] = "http://user:p%40ss@proxy.corp.local:3128"
+px = proxy_settings("t.eu.qlikcloud.com")
+check("HTTPS_PROXY parsed with host, port and decoded credentials",
+      px.get("http_proxy_host") == "proxy.corp.local" and px.get("http_proxy_port") == 3128 and px.get("http_proxy_auth") == ("user", "p@ss"))
+os.environ["NO_PROXY"] = "localhost,.qlikcloud.com"
+check("NO_PROXY suffix match -> direct", proxy_settings("t.eu.qlikcloud.com") == {})
+for k, v in saved.items():
+    os.environ.pop(k, None)
+    if v is not None:
+        os.environ[k] = v
 print()
 print(f"{sum(ok)} of {len(ok)} pass")
 sys.exit(0 if all(ok) else 1)

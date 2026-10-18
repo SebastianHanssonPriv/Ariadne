@@ -9,7 +9,9 @@ finding rather than an error.
 from __future__ import annotations
 
 import json
+import os
 import re
+import urllib.parse
 
 import websocket
 
@@ -25,6 +27,27 @@ _PERMANENT = ("access denied", "forbidden", "unauthorized", "not authorized",
 # enumerated because extension objects invent their own property names.
 _EXPR_KEYS = {"qdef", "qv", "qfielddefs"}
 _EXPR_KEY_HINT = re.compile(r"(?i)expr|condition")
+
+
+def proxy_settings(host: str) -> dict:
+    """websocket-client keyword arguments from HTTPS_PROXY / https_proxy and
+    NO_PROXY, the variables every corporate PC already carries for pip and
+    the browser. Empty when no proxy applies."""
+    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    for entry in (e.strip().lower() for e in no_proxy.split(",") if e.strip()):
+        if entry == "*" or host.lower() == entry or host.lower().endswith("." + entry.lstrip(".")) or host.lower().endswith(entry):
+            return {}
+    raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
+    if not raw:
+        return {}
+    u = urllib.parse.urlsplit(raw if "://" in raw else "http://" + raw)
+    if not u.hostname:
+        return {}
+    kw = {"http_proxy_host": u.hostname, "http_proxy_port": u.port or 8080,
+          "proxy_type": (u.scheme or "http").lower()}
+    if u.username:
+        kw["http_proxy_auth"] = (urllib.parse.unquote(u.username), urllib.parse.unquote(u.password or ""))
+    return kw
 
 
 class EngineError(RuntimeError):
@@ -54,9 +77,12 @@ class EngineSession:
 
     # ------------------------------------------------------------ plumbing
     def connect(self):
-        self.ws = websocket.create_connection(
-            f"wss://{self.host}/app/{self.app_id}",
-            header=[f"Authorization: Bearer {self.api_key}"], timeout=self.timeout)
+        """Open the WebSocket. urllib honours HTTPS_PROXY on its own; the
+        websocket library does not, so the same variable is read here and
+        passed through, or a corporate PC would reach REST and not the Engine."""
+        kw = {"header": [f"Authorization: Bearer {self.api_key}"], "timeout": self.timeout}
+        kw.update(proxy_settings(self.host))
+        self.ws = websocket.create_connection(f"wss://{self.host}/app/{self.app_id}", **kw)
         self.ws.recv()  # OnConnected
         return self
 

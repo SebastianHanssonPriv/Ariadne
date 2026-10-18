@@ -89,6 +89,7 @@ pip install .                     # or: pip install -e . while developing
 export QLIK_TENANT=acme.eu.qlikcloud.com
 export QLIK_API_KEY=...           # or QLIK_API_KEY_FILE=/path/to/key
 ariadne check                     # who the key acts as, how many spaces it sees
+ariadne check --app <app id>      # and open one app over the Engine, read its script
 ariadne analyze some_script.qvs   # load-script facts, no tenant needed
 ```
 
@@ -104,6 +105,7 @@ ariadne analyze some_script.qvs   # load-script facts, no tenant needed
 | `ARIADNE_SNAPSHOT_WITH_DATA` | app ids or name globs whose snapshots keep their data (apps that hold user-entered data) | none |
 | `ARIADNE_AUDIT_LOG` | path of the append-only JSONL audit log; a real write is refused when it cannot be appended to | a per-user file on this machine |
 | `ARIADNE_AUDIT` | `writes` (default), `all` (dry runs too) or `off` | writes |
+| `HTTPS_PROXY`, `NO_PROXY` | the standard proxy variables; honoured for REST and for the Engine WebSocket | none |
 
 Example for a tenant with two archive spaces:
 
